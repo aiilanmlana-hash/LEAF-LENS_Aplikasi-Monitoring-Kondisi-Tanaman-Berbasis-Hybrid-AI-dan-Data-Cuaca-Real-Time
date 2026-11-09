@@ -1,9 +1,6 @@
 # ==============================================================================
 # PROJECT    : Smart Plant Monitoring & AI Detection (OpenCV Live)
-# AUTHOR     : Ahmad Maulana (NIM: E41241323)
-# INSTITUTION: Teknik Informatika - Politeknik Negeri Jember (Kampus Sidoarjo)
 # YEAR       : 2026
-# COPYRIGHT  : (c) 2026 Ahmad Maulana. All Rights Reserved.
 # ==============================================================================
 
 import cv2
@@ -97,8 +94,6 @@ if cap is None:
     exit()
 
 print("\n========================================================")
-print("  DEVELOPED BY : Ahmad Maulana (NIM: E41241323)")
-print("  INSTITUSI    : Teknik Informatika Polije Kampus Sidoarjo")
 print("========================================================\n")
 print("Suara Bahasa Indonesia (Damayanti) Otomatis Aktif!")
 print("Tekan 's' : Simpan Hasil Monitoring ke CSV & File Mask")
@@ -204,17 +199,12 @@ while True:
         last_speak_status = text_speak
 
     # ==========================================
-    # 8. TAMPILAN UI BERSANDINGAN & WATERMARK OVERLAY
+    # 8. TAMPILAN UI BERSANDINGAN
     # ==========================================
     # Header Atas
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 85), (0, 0, 0), -1)
     cv2.putText(frame, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     cv2.putText(frame, kondisi_text, (15, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.65, bg_color, 2)
-
-    # WATERMARK VISUAL PERMANEN PADA LAYAR KAMERA (Bawah Kanan)
-    watermark_text = "(c) 2026 Ahmad Maulana (E41241323) - Polije"
-    cv2.rectangle(frame, (0, frame.shape[0] - 30), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
-    cv2.putText(frame, watermark_text, (15, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     mask_bgr = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2BGR)
     cv2.rectangle(mask_bgr, (0, 0), (mask_bgr.shape[1], 40), (0, 0, 0), -1)

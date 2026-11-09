@@ -1,9 +1,6 @@
 # ==============================================================================
 # PROJECT    : Smart Plant AI Classifier (Live Camera)
-# AUTHOR     : Ahmad Maulana (NIM: E41241323)
-# INSTITUTION: Teknik Informatika - Politeknik Negeri Jember (Kampus Sidoarjo)
 # YEAR       : 2026
-# COPYRIGHT  : (c) 2026 Ahmad Maulana. All Rights Reserved.
 # ==============================================================================
 
 import cv2
@@ -59,8 +56,6 @@ if cap is None:
     exit()
 
 print("\n========================================================")
-print("  DEVELOPED BY : Ahmad Maulana (NIM: E41241323)")
-print("  INSTITUSI    : Teknik Informatika Polije Kampus Sidoarjo")
 print("========================================================\n")
 print("Kamera Aktif! Tekan 's' untuk Bicarakan Hasil / Tekan 'q' untuk Keluar.\n")
 
@@ -114,17 +109,12 @@ while True:
         text_speak = f"Terdeteksi daun {clean_label}"
 
     # ==========================================
-    # 5. TAMPILKAN UI & WATERMARK OVERLAY
+    # 5. TAMPILKAN UI
     # ==========================================
     # Header Atas Informasi Deteksi
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 90), (0, 0, 0), -1)
     cv2.putText(frame, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, bg_color, 2)
     cv2.putText(frame, deteksi_text, (15, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
-
-    # WATERMARK VISUAL PERMANEN (Pojok Bawah Layar Video)
-    watermark_text = "(c) 2026 Ahmad Maulana (E41241323) - Polije"
-    cv2.rectangle(frame, (0, frame.shape[0] - 30), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
-    cv2.putText(frame, watermark_text, (15, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     cv2.imshow("Deteksi Daun & Segmentasi Live - MacBook Camera", frame)
 

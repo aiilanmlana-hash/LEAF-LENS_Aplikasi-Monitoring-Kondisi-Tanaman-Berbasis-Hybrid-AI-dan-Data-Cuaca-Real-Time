@@ -1,0 +1,44 @@
+name: Flutter Web Folder
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "web/**"
+      - ".github/workflows/flutter-web-folder.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/flutter-web-folder.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PLANT_API_URL: ${{ vars.PLANT_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install dependencies
+        working-directory: web
+        run: flutter pub get
+      - name: Analyze and test
+        working-directory: web
+        run: |
+          flutter analyze
+          flutter test
+      - name: Build release
+        working-directory: web
+        run: |
+          if [ -n "$PLANT_API_URL" ]; then
+            flutter build web --release --dart-define=PLANT_API_URL="$PLANT_API_URL"
+          else
+            flutter build web --release
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smart-plant-web-folder
+          path: web/build/web/
+          if-no-files-found: error

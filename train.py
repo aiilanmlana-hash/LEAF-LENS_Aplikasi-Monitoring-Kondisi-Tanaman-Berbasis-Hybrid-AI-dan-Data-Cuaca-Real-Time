@@ -1,9 +1,6 @@
 # ==============================================================================
 # PROJECT    : Smart Plant AI Model Training (MobileNetV2)
-# AUTHOR     : Ahmad Maulana (NIM: E41241323)
-# INSTITUTION: Teknik Informatika - Politeknik Negeri Jember (Kampus Sidoarjo)
 # YEAR       : 2026
-# COPYRIGHT  : (c) 2026 Ahmad Maulana. All Rights Reserved.
 # ==============================================================================
 
 import os
@@ -12,17 +9,19 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader, Subset
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import numpy as np
 
 # Print Identitas Pembuat Proyek
 print("\n========================================================")
 print("  TRAINING MODEL AI - SMART PLANT MONITORING")
-print("  DEVELOPED BY : Ahmad Maulana (NIM: E41241323)")
-print("  INSTITUSI    : Teknik Informatika Polije Kampus Sidoarjo")
 print("========================================================\n")
 
 # 1. Konfigurasi
-TRAIN_DIR = 'PlantVillage/train'
-VAL_DIR = 'PlantVillage/val'
+TRAIN_DIR = 'PlantVillage/tomat_kentang/train'
+VAL_DIR = 'PlantVillage/tomat_kentang/val'
 BATCH_SIZE = 32
 EPOCHS = 2
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -80,11 +79,9 @@ for epoch in range(EPOCHS):
     epoch_loss = running_loss / len(train_dataset)
     print(f"Epoch {epoch+1}/{EPOCHS} Selesai - Loss: {epoch_loss:.4f}")
 
-# 7. Simpan Model Beserta Watermark Metadata Kepemilikan
+# 7. Simpan bobot model
 model_path = 'model_daun.pth'
 torch.save(model.state_dict(), model_path)
 
 print(f"\n[BERHASIL] File '{model_path}' berhasil dibuat!")
-print("========================================================")
-print("  Hak Cipta Model © 2026 Ahmad Maulana (E41241323)")
 print("========================================================\n")

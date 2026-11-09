@@ -1,0 +1,43 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "smart-plant-app-dd8bc",
+          "appId": "1:398093379000:android:9159c1c3cb4dc841689b4d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "smart-plant-app-dd8bc",
+          "appId": "1:398093379000:ios:f20cf0f51c77df01689b4d",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "smart-plant-app-dd8bc",
+          "appId": "1:398093379000:ios:f20cf0f51c77df01689b4d",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "smart-plant-app-dd8bc",
+          "configurations": {
+            "web": "1:398093379000:web:b7f40f3ad49be559689b4d",
+            "android": "1:398093379000:android:9159c1c3cb4dc841689b4d",
+            "ios": "1:398093379000:ios:f20cf0f51c77df01689b4d",
+            "macos": "1:398093379000:ios:f20cf0f51c77df01689b4d"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

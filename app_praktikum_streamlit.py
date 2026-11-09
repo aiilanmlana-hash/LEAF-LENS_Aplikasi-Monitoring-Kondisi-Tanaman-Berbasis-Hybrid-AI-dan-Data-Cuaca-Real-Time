@@ -1,9 +1,6 @@
 # ==============================================================================
 # PROJECT    : Smart Plant Monitoring & AI Detection
-# AUTHOR     : Ahmad Maulana (NIM: E41241323)
-# INSTITUTION: Teknik Informatika - Politeknik Negeri Jember (Kampus Sidoarjo)
 # YEAR       : 2026
-# COPYRIGHT  : (c) 2026 Ahmad Maulana. All Rights Reserved.
 # ==============================================================================
 
 import streamlit as st
@@ -99,10 +96,9 @@ v_max = st.sidebar.slider("Value Maksimum", 0, 255, 255)
 kernel_size = st.sidebar.select_slider("Ukuran Kernel Morfologi", options=[3, 5, 7, 9], value=5)
 
 # ==========================================
-# 4. TAMPILAN UTAMA STREAMLIT & WATERMARK
+# 4. TAMPILAN UTAMA STREAMLIT
 # ==========================================
 st.title("🌱 Smart Plant Monitoring + AI Detection")
-st.caption("© 2026 Developed by **Ahmad Maulana (E41241323)** - Teknik Informatika Polije Kampus Sidoarjo")
 st.write("Aplikasi monitoring tanaman berbasis **Streamlit, OpenCV HSV, dan PyTorch AI**.")
 st.divider()
 

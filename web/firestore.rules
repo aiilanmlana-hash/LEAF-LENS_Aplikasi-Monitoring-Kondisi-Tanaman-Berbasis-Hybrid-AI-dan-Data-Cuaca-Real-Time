@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verifiedUser() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    match /monitoring_records/{recordId} {
+      allow read, delete: if verifiedUser()
+        && resource.data.user_id == request.auth.uid;
+
+      // Records are immutable audit/history entries. A client may create or
+      // delete only its own entries; it may not alter a prior result.
+      allow create: if verifiedUser()
+        && request.resource.data.user_id == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'user_id', 'plant_id', 'location', 'timestamp', 'green_ratio',
+          'yellow_ratio', 'prediction', 'plant_name', 'disease_name',
+          'confidence', 'ann_prediction', 'ann_confidence', 'health_score',
+          'severity', 'status_label', 'care_priority', 'care_summary',
+          'care_actions', 'care_disclaimer', 'organic_recommendations',
+          'chemical_recommendations', 'untreated_impact', 'temperature_c',
+          'humidity_pct', 'precipitation_mm', 'weather_source',
+          'weather_station', 'weather_error', 'mask_base64'
+        ])
+        && request.resource.data.plant_id is string
+        && request.resource.data.plant_id.size() <= 40
+        && request.resource.data.location is string
+        && request.resource.data.location.size() <= 160
+        && request.resource.data.timestamp is timestamp
+        && request.resource.data.green_ratio is number
+        && request.resource.data.yellow_ratio is number
+        && request.resource.data.prediction is string
+        && request.resource.data.prediction.size() <= 160
+        && (request.resource.data.confidence is number || request.resource.data.confidence == null)
+        && (request.resource.data.ann_prediction is string || request.resource.data.ann_prediction == null)
+        && (request.resource.data.ann_confidence is number || request.resource.data.ann_confidence == null)
+        && (request.resource.data.health_score is number || request.resource.data.health_score == null)
+        && request.resource.data.severity is string
+        && request.resource.data.status_label is string
+        && request.resource.data.care_priority is string
+        && request.resource.data.care_summary is string
+        && request.resource.data.care_summary.size() <= 700
+        && request.resource.data.care_actions is list
+        && request.resource.data.care_actions.size() <= 5
+        && request.resource.data.care_disclaimer is string
+        && request.resource.data.care_disclaimer.size() <= 400
+        && request.resource.data.organic_recommendations is list
+        && request.resource.data.organic_recommendations.size() <= 5
+        && request.resource.data.chemical_recommendations is list
+        && request.resource.data.chemical_recommendations.size() <= 5
+        && request.resource.data.untreated_impact is string
+        && request.resource.data.untreated_impact.size() <= 700
+        && (request.resource.data.temperature_c == null
+          || (request.resource.data.temperature_c is number
+            && request.resource.data.temperature_c >= -50
+            && request.resource.data.temperature_c <= 60))
+        && (request.resource.data.humidity_pct == null
+          || (request.resource.data.humidity_pct is number
+            && request.resource.data.humidity_pct >= 0
+            && request.resource.data.humidity_pct <= 100))
+        && (request.resource.data.precipitation_mm == null
+          || (request.resource.data.precipitation_mm is number
+            && request.resource.data.precipitation_mm >= 0
+            && request.resource.data.precipitation_mm <= 1000))
+        && (request.resource.data.weather_source == null
+          || (request.resource.data.weather_source is string
+            && request.resource.data.weather_source.size() <= 80))
+        && (request.resource.data.weather_station == null
+          || (request.resource.data.weather_station is string
+            && request.resource.data.weather_station.size() <= 160))
+        && (request.resource.data.weather_error == null
+          || (request.resource.data.weather_error is string
+            && request.resource.data.weather_error.size() <= 500))
+        && request.resource.data.mask_base64 is string
+        && request.resource.data.mask_base64.size() <= 650000;
+
+      allow update: if false;
+    }
+  }
+}
