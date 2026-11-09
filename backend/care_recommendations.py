@@ -28,9 +28,11 @@ def _advice(
     organic: list[str],
     chemical: list[str],
     untreated_impact: str,
+    decision_tree_node: str = "monitor",
 ) -> dict[str, Any]:
     return {
         "priority": priority,
+        "decision_tree_node": decision_tree_node,
         "summary": summary,
         "emergency_actions": emergency_actions,
         "organic_recommendations": organic,
@@ -40,6 +42,44 @@ def _advice(
         # Keep the older response key for clients that display generic actions.
         "actions": emergency_actions,
     }
+
+
+def _risk_level(score: float) -> str:
+    if score >= 70:
+        return "Tinggi"
+    if score >= 35:
+        return "Sedang"
+    return "Rendah"
+
+
+def _weather_risk(
+    temperature_c: float | None,
+    humidity_pct: float | None,
+    precipitation_mm: float | None,
+) -> tuple[float | None, str, str]:
+    if temperature_c is None and humidity_pct is None and precipitation_mm is None:
+        return None, "Tidak tersedia", "Data cuaca tidak tersedia."
+
+    risk_components = []
+    if humidity_pct is not None:
+        risk_components.append(max(0.0, min(100.0, (humidity_pct - 65.0) / 25.0 * 100)))
+        if humidity_pct >= 75 and temperature_c is not None:
+            risk_components.append(
+                max(0.0, min(100.0, (temperature_c - 20.0) / 10.0 * 100))
+            )
+    if precipitation_mm is not None:
+        risk_components.append(max(0.0, min(100.0, precipitation_mm / 15.0 * 100)))
+    score = max(risk_components, default=0.0)
+    level = _risk_level(score)
+
+    conditions = []
+    if humidity_pct is not None:
+        conditions.append(f"kelembapan {humidity_pct:.0f}%")
+    if temperature_c is not None:
+        conditions.append(f"suhu {temperature_c:.1f} °C")
+    if precipitation_mm is not None:
+        conditions.append(f"hujan {precipitation_mm:.1f} mm")
+    return score, level, f"Risiko {level} — {', '.join(conditions)}."
 
 
 def _verification_advice(reason: str) -> dict[str, Any]:
@@ -54,6 +94,7 @@ def _verification_advice(reason: str) -> dict[str, Any]:
         ["Utamakan sanitasi alat dan pemantauan; belum ada perlakuan hayati spesifik."],
         ["Belum ada bahan aktif yang direkomendasikan sebelum diagnosis dikonfirmasi."],
         "Jika penyebabnya penyakit menular, penundaan konfirmasi dapat memberi waktu gejala menyebar.",
+        decision_tree_node="verification_required",
     )
 
 
@@ -65,41 +106,78 @@ def recommend_care(
     confidence: float,
     health_score: float,
     dry_ratio: float,
+    class_name: str | None = None,
+    green_ratio: float = 0.0,
     temperature_c: float | None = None,
     humidity_pct: float | None = None,
     precipitation_mm: float | None = None,
+    severity: str | None = None,
 ) -> dict[str, Any]:
-    """Return crop-aware actions without treating a photo prediction as certainty."""
+    """Apply a deterministic decision tree before returning cautious crop advice."""
     plant = plant_name.casefold().strip()
     disease = disease_name.casefold().replace("_", " ")
-    if confidence < 65:
-        return _verification_advice(
-            "Keyakinan model rendah; hasil penyakit tidak cukup kuat untuk menentukan perlakuan."
+    classification = (class_name or f"{plant_name}___{disease_name}").casefold()
+
+    def with_metrics(advice: dict[str, Any]) -> dict[str, Any]:
+        leaf_risk_score = max(0.0, min(100.0, 100.0 - health_score))
+        weather_risk_score, weather_risk_level, weather_summary = _weather_risk(
+            temperature_c, humidity_pct, precipitation_mm
+        )
+        priority_level = {
+            "Rutin": "Rendah",
+            "Pantau": "Rendah",
+            "Sedang": "Sedang",
+            "Tinggi": "Tinggi",
+            "Sangat tinggi": "Tinggi",
+            "Perlu verifikasi": "Perlu verifikasi",
+        }.get(advice["priority"], "Sedang")
+        advice["analysis_metrics"] = {
+            "priority_level": priority_level,
+            "severity": severity or ("Sehat" if health_score >= 70 else "Perlu perhatian"),
+            "fuzzy_health_score": round(health_score, 1),
+            "leaf_risk_score": round(leaf_risk_score, 1),
+            "leaf_risk_level": _risk_level(leaf_risk_score),
+            "weather_risk_score": weather_risk_score,
+            "weather_risk_level": weather_risk_level,
+            "weather_summary": weather_summary,
+            "weather_risk_method": (
+                "Indeks heuristik 0–100: RH 65–90%, suhu 20–30 °C saat RH ≥75%, "
+                "dan hujan 0–15 mm; bukan probabilitas penyakit."
+            ),
+            "green_area_pct": round(max(0.0, min(100.0, green_ratio)), 2),
+            "affected_area_pct": round(max(0.0, min(100.0, dry_ratio)), 2),
+            "temperature_c": temperature_c,
+            "humidity_pct": humidity_pct,
+            "precipitation_mm": precipitation_mm,
+        }
+        return advice
+
+    if confidence < 70:
+        return with_metrics(
+            _verification_advice(
+                "Keyakinan model rendah; hasil penyakit tidak cukup kuat untuk menentukan perlakuan."
+            )
         )
     if plant not in _SUPPORTED_PLANTS:
-        return _verification_advice(
-            "Tanaman berada di luar cakupan rekomendasi Corn, Potato, dan Tomato."
+        return with_metrics(
+            _verification_advice(
+                "Tanaman berada di luar cakupan rekomendasi Corn, Potato, dan Tomato."
+            )
         )
-    if is_healthy and health_score >= 60:
-        return _advice(
-            "Rutin",
-            f"Daun {plant_name} tampak relatif sehat pada foto ini; fokus pada pencegahan.",
-            [
-                "Pantau daun baru dan sisi bawah daun setiap minggu.",
-                "Siram di area akar dan jaga sirkulasi udara di antara tanaman.",
-            ],
-            [
-                "Gunakan rotasi tanaman dan sanitasi sisa tanaman sesuai praktik setempat.",
-                "Pertahankan nutrisi berdasarkan uji tanah, bukan pemupukan spekulatif.",
-            ],
-            ["Tidak perlu fungisida/bakterisida berdasarkan foto daun yang tampak sehat."],
-            "Tanpa pemantauan rutin, gejala awal atau hama yang belum tampak dapat terlewat.",
+    if green_ratio < 2 and dry_ratio < 3:
+        return with_metrics(
+            _verification_advice(
+                "Area daun yang terukur terlalu kecil; ambil foto ulang sebelum menentukan tindakan."
+            )
         )
 
-    is_virus = any(term in disease for term in ("virus", "mosaic", "yellow leaf curl"))
+    is_virus = any(
+        term in f"{classification} {disease}"
+        for term in ("virus", "mosaic", "yellow leaf curl")
+    )
     is_bacterial = any(term in disease for term in ("bacterial", "bacteria"))
-    is_blight = "blight" in disease
-    is_spider_mite = "spider mite" in disease
+    is_blight = "blight" in f"{classification} {disease}"
+    is_spider_mite = "spider mite" in f"{classification} {disease}"
     high_blight_weather = (
         is_blight
         and humidity_pct is not None
@@ -107,82 +185,119 @@ def recommend_care(
         and temperature_c is not None
         and temperature_c >= 22
     )
+
+    if health_score < 40 or dry_ratio >= 35:
+        decision_tree_node = "urgent_severe_symptoms"
+    elif is_virus:
+        decision_tree_node = "high_priority_virus"
+    elif high_blight_weather:
+        decision_tree_node = "urgent_weather_blight"
+    elif (
+        is_blight
+        or is_bacterial
+        or is_spider_mite
+        or health_score < 55
+        or dry_ratio >= 20
+    ):
+        decision_tree_node = "high_priority_symptoms"
+    else:
+        decision_tree_node = "monitor_and_verify"
+
+    if is_healthy and health_score >= 60:
+        return with_metrics(
+            _advice(
+                "Rutin",
+                f"Daun {plant_name} tampak relatif sehat pada foto ini; fokus pada pencegahan.",
+                [
+                    "Periksa daun baru dan sisi bawah daun setiap minggu.",
+                    "Siram di pangkal tanaman dan jaga sirkulasi udara.",
+                ],
+                [
+                    "Sanitasi alat dan sisa tanaman; lakukan rotasi sesuai pola tanam.",
+                    "Atur pemupukan berdasarkan uji tanah.",
+                ],
+                ["Tidak perlu fungisida/bakterisida berdasarkan foto daun yang tampak sehat."],
+                "Tanpa pemantauan rutin, gejala awal atau hama yang belum tampak dapat terlewat.",
+                decision_tree_node="monitor_healthy",
+            )
+        )
+
     priority = "Tinggi" if is_virus or is_blight or health_score < 40 else "Sedang"
 
     emergency = [
-        "Tandai dan foto gejala; periksa beberapa tanaman untuk memastikan pola penyebarannya.",
-        "Buang daun yang sangat rusak dengan alat bersih dan jangan memindahkan sisa sakit ke kompos.",
+        "Tandai gejala dan periksa 3–5 tanaman di sekitarnya hari ini.",
+        "Buang daun yang sangat rusak dengan alat bersih; pisahkan dari kompos.",
     ]
     if high_blight_weather:
         emergency.insert(
             0,
-            "Kelembapan tinggi dan suhu hangat meningkatkan risiko hawar; periksa tanaman dan daun sekitarnya hari ini.",
+            "Cuaca lembap dan hangat meningkatkan risiko hawar; cek daun sekitar dan hindari membasahi tajuk.",
         )
     if is_virus:
         emergency = [
-            "Pisahkan tanaman bergejala berat dan bersihkan alat sebelum berpindah ke tanaman lain.",
-            "Periksa vektor seperti kutu kebul atau aphid; konfirmasi virus sebelum mencabut tanaman.",
+            "Pisahkan tanaman bergejala dan bersihkan alat sebelum berpindah.",
+            "Periksa kutu kebul/aphid; konfirmasi virus sebelum mencabut tanaman.",
         ]
     elif is_spider_mite:
         emergency = [
-            "Periksa sisi bawah daun dengan kaca pembesar untuk memastikan tungau atau jaring halus.",
-            "Cegah perpindahan tungau dengan membersihkan alat dan memantau tanaman di sekitarnya.",
+            "Periksa bawah daun dengan kaca pembesar untuk mencari tungau/jaring halus.",
+            "Pantau tanaman sekitar dan bersihkan alat sebelum berpindah.",
         ]
 
     organic = [
-        "Kurangi sumber inokulum dengan sanitasi, rotasi tanaman, dan penyiraman di area akar.",
-        "Produk hayati berbasis Bacillus subtilis dapat dipertimbangkan sebagai pendukung pencegahan bila terdaftar untuk komoditas setempat.",
+        "Sanitasi alat dan sisa tanaman; atur rotasi sesuai pola tanam.",
+        "Siram di pangkal dan jaga sirkulasi udara; gunakan produk hayati hanya jika terdaftar.",
     ]
     chemical = [
-        "Bahan aktif fungisida yang dapat ditanyakan kepada penyuluh: azoxystrobin atau mancozeb; kecocokan tanaman/penyakit dan registrasi harus diperiksa pada label lokal.",
-        "Jangan mencampur produk atau menentukan dosis dari aplikasi ini; ikuti label, interval panen, APD, dan rotasi kelompok FRAC.",
+        "Minta penyuluh memastikan diagnosis serta bahan aktif terdaftar untuk tanaman ini.",
+        "Ikuti label, APD, interval panen, dan rotasi FRAC; jangan mencampur produk.",
     ]
     impact = (
         "Bercak atau hawar dapat meluas pada kondisi mendukung, mengurangi luas daun sehat, dan menurunkan hasil."
     )
     if is_bacterial:
         organic = [
-            "Gunakan benih sehat, sanitasi alat, rotasi, dan hindari memercikkan air dari tanaman sakit.",
-            "Pengendalian hayati berbasis Bacillus subtilis hanya sebagai tindakan pencegahan pendukung bila produk lokal terdaftar.",
+            "Gunakan benih sehat; sanitasi alat dan hindari percikan dari tanaman sakit.",
+            "Pertimbangkan pengendalian hayati hanya jika produk terdaftar untuk tanaman.",
         ]
         chemical = [
-            "Bahan aktif berbasis tembaga (misalnya copper hydroxide) hanya dapat dipertimbangkan setelah dugaan bakteri dikonfirmasi dan label mengizinkannya; efektivitas dapat terbatas.",
-            "Hindari pemakaian berulang tanpa arahan penyuluh karena resistansi dan fitotoksisitas mungkin terjadi.",
+            "Pertimbangkan produk tembaga hanya setelah dugaan bakteri dan label dikonfirmasi.",
+            "Minta arahan penyuluh; pemakaian berulang berisiko resistansi/fitotoksisitas.",
         ]
         impact = "Jika penyebab bakteri benar, bercak dapat menyebar lewat percikan air dan sisa tanaman terinfeksi."
     elif is_virus:
         organic = [
-            "Cabut dan musnahkan tanaman terinfeksi berat sesuai aturan setempat; jangan gunakan sebagai bahan tanam.",
-            "Kendalikan vektor secara terpadu dan pertahankan kebersihan alat serta area tanam.",
+            "Pisahkan tanaman; musnahkan yang terinfeksi berat sesuai aturan setempat.",
+            "Kelola vektor terpadu dan bersihkan alat serta area tanam.",
         ]
         chemical = [
-            "Tidak ada fungisida/bakterisida yang menyembuhkan virus pada tanaman terinfeksi.",
-            "Jangan memakai insektisida hanya untuk mengobati virus; pengendalian vektor harus berdasarkan identifikasi dan label produk.",
+            "Fungisida/bakterisida tidak menyembuhkan tanaman yang terinfeksi virus.",
+            "Kendalikan vektor hanya setelah identifikasi dan ikuti label produk.",
         ]
         impact = "Virus dapat menetap dan menyebar melalui vektor atau bahan tanam, sehingga tanaman lain berisiko terinfeksi."
     elif is_spider_mite:
         organic = [
-            "Pertahankan predator alami dan hindari penggunaan insektisida spektrum luas tanpa identifikasi hama.",
-            "Bilas sisi bawah daun dengan air bila sesuai sistem budidaya dan tidak memperparah penyakit jamur.",
+            "Pertahankan predator alami; hindari insektisida spektrum luas tanpa identifikasi.",
+            "Bilas bawah daun bila sesuai budidaya dan tidak meningkatkan risiko jamur.",
         ]
         chemical = [
-            "Tidak ada akarisida yang direkomendasikan dari foto saja; identifikasi tungau dan cek produk terdaftar untuk tanaman tersebut.",
+            "Jangan gunakan akarisida sebelum tungau teridentifikasi dan label tanaman diperiksa.",
         ]
         impact = "Populasi tungau yang meningkat dapat menyebabkan daun berbintik, menguning, lalu mengering."
     elif is_blight and plant in {"potato", "kentang", "tomato", "tomat"}:
         if "late blight" in disease:
             chemical[0] = (
-                "Untuk hawar daun, tanyakan kepada penyuluh tentang bahan aktif protektan seperti mancozeb; produk sistemik (misalnya metalaxyl-M) hanya bila diagnosis, rotasi FRAC, dan label lokal sesuai."
+                "Untuk hawar daun, minta penyuluh memeriksa fungisida terdaftar, diagnosis, label, dan rotasi FRAC."
             )
         else:
             chemical[0] = (
-                "Untuk bercak/hawar dini, tanyakan kepada penyuluh apakah azoxystrobin atau difenoconazole sesuai diagnosis serta terdaftar pada tanaman ini."
+                "Untuk hawar dini, minta penyuluh menilai azoxystrobin/difenoconazole dan cek label komoditas."
             )
         if high_blight_weather:
             priority = "Sangat tinggi"
     elif plant in {"corn", "corn (maize)", "jagung"}:
         chemical[0] = (
-            "Untuk penyakit daun jagung, tanyakan apakah azoxystrobin atau propiconazole terdaftar dan sesuai diagnosis; jangan gunakan tanpa label tanaman yang tepat."
+            "Untuk penyakit daun jagung, verifikasi bahan aktif dan label tanaman bersama penyuluh."
         )
 
     if dry_ratio >= 10 or health_score < 50:
@@ -194,11 +309,14 @@ def recommend_care(
         if is_virus
         else "Saran berikut adalah langkah skrining dan pengelolaan terpadu; foto saja belum memastikan penyebab."
     )
-    return _advice(
-        priority,
-        summary,
-        emergency,
-        organic,
-        chemical,
-        impact,
+    return with_metrics(
+        _advice(
+            priority,
+            summary,
+            emergency,
+            organic,
+            chemical,
+            impact,
+            decision_tree_node=decision_tree_node,
+        )
     )

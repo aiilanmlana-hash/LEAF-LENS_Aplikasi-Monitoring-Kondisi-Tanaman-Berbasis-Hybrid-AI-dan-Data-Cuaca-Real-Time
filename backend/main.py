@@ -48,6 +48,9 @@ FALLBACK_MODEL_PATHS = (
     PROJECT_ROOT / "model_daun_plantvillage_full_train.pth",
     PROJECT_ROOT / "model_daun.pth",
 )
+DEFAULT_SECONDARY_MODEL_PATH = (
+    PROJECT_ROOT / "backend" / "model_efficientnet_b0_plantvillage.pth"
+)
 CLASS_DIR = PROJECT_ROOT / "PlantVillage" / "train"
 NUMERIC_ANN_PATH = PROJECT_ROOT / "backend" / "numeric_ann_weights.json"
 SUPPORTED_CLASS_PREFIXES = (
@@ -94,6 +97,28 @@ _numeric_ann_lock = threading.Lock()
 _logger = logging.getLogger(__name__)
 
 
+class _ProbabilityEnsemble:
+    def __init__(
+        self,
+        models: list[Any],
+        weights: list[float],
+        names: list[str],
+    ) -> None:
+        total_weight = sum(weights)
+        if len(models) != len(weights) or len(models) != len(names) or total_weight <= 0:
+            raise ValueError("Ensemble models, weights, and names must be aligned.")
+        self.models = models
+        self.weights = [weight / total_weight for weight in weights]
+        self.names = names
+
+    def probabilities(self, tensor: Any, torch: Any) -> Any:
+        weighted_probabilities = []
+        for model, weight in zip(self.models, self.weights):
+            probabilities = torch.nn.functional.softmax(model(tensor), dim=1)
+            weighted_probabilities.append(probabilities * weight)
+        return torch.stack(weighted_probabilities, dim=0).sum(dim=0)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,9 +129,9 @@ async def lifespan(_: FastAPI):
     # Keep the API available with a clear 503 response if assets are missing.
     try:
         await run_in_threadpool(_model_resources)
-        _logger.info("MobileNetV2 model preloaded.")
+        _logger.info("Image classification model preloaded.")
     except HTTPException as error:
-        _logger.warning("MobileNetV2 preload skipped: %s", error.detail)
+        _logger.warning("Image classifier preload skipped: %s", error.detail)
     yield
 
 
@@ -166,6 +191,34 @@ def initialize_database() -> None:
             )
 
 
+def _checkpoint_class_names(
+    checkpoint: dict[str, Any],
+    classes_dir: Path = CLASS_DIR,
+) -> list[str]:
+    class_names = checkpoint.get("classes")
+    if (
+        not isinstance(class_names, list)
+        or not class_names
+        or any(not isinstance(name, str) for name in class_names)
+        or class_names != sorted(set(class_names))
+    ):
+        raise ValueError("Model checkpoint class-name metadata is invalid")
+
+    if classes_dir.is_dir():
+        dataset_class_names = sorted(
+            path.name
+            for path in classes_dir.iterdir()
+            if path.is_dir()
+            and (
+                path.name == OOD_CLASS_NAME
+                or path.name.startswith(SUPPORTED_CLASS_PREFIXES)
+            )
+        )
+        if dataset_class_names and dataset_class_names != class_names:
+            raise ValueError("Model checkpoint classes do not match dataset folders")
+    return class_names
+
+
 def _model_resources() -> tuple[Any, list[str], Any, Any]:
     global _model_bundle
     with _model_lock:
@@ -177,48 +230,32 @@ def _model_resources() -> tuple[Any, list[str], Any, Any]:
                 (path for path in FALLBACK_MODEL_PATHS if path.is_file()),
                 MODEL_PATH,
             )
-        if not model_path.is_file() or not CLASS_DIR.is_dir():
+        if not model_path.is_file():
             _logger.error(
-                "Model assets are unavailable: model=%s classes_dir=%s",
+                "Model checkpoint is unavailable: model=%s",
                 model_path,
-                CLASS_DIR,
             )
             raise HTTPException(
                 status_code=503,
                 detail="Layanan analisis gambar sedang tidak tersedia. Silakan coba lagi nanti.",
             )
-        class_names = sorted(
-            path.name
-            for path in CLASS_DIR.iterdir()
-            if path.is_dir()
-            and (
-                path.name == OOD_CLASS_NAME
-                or path.name.startswith(SUPPORTED_CLASS_PREFIXES)
-            )
-        )
-        if not class_names:
-            _logger.error("No supported PlantVillage class directories were found")
-            raise HTTPException(
-                status_code=503,
-                detail="Layanan analisis gambar sedang tidak tersedia. Silakan coba lagi nanti.",
-            )
-
         try:
             import torch
             import torch.nn as nn
             from torchvision import models, transforms
 
-            model = models.mobilenet_v2(weights=None)
-            model.classifier[1] = nn.Linear(model.last_channel, len(class_names))
             checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
             if not isinstance(checkpoint, dict):
                 raise ValueError("Model checkpoint format is invalid")
-            checkpoint_names = checkpoint.get("classes")
+            class_names = _checkpoint_class_names(checkpoint)
+
+            model = models.mobilenet_v2(weights=None)
+            model.classifier[1] = nn.Linear(model.last_channel, len(class_names))
+            if checkpoint.get("architecture", "mobilenet_v2") != "mobilenet_v2":
+                raise ValueError("Primary checkpoint architecture must be mobilenet_v2")
             state_dict = checkpoint.get("state_dict", checkpoint)
-            if checkpoint_names is None:
-                raise ValueError("Model checkpoint has no class-name metadata")
-            if checkpoint_names != class_names:
-                raise ValueError("Model checkpoint classes do not match dataset folders")
+            if not isinstance(state_dict, dict):
+                raise ValueError("Model checkpoint state_dict format is invalid")
             checkpoint_classes = state_dict.get("classifier.1.weight")
             if (
                 checkpoint_classes is None
@@ -234,8 +271,72 @@ def _model_resources() -> tuple[Any, list[str], Any, Any]:
                 )
             model.load_state_dict(state_dict)
             model.eval()
-        except (ImportError, OSError, RuntimeError, ValueError) as error:
-            _logger.exception("Could not load the MobileNetV2 model")
+
+            model_set = [model]
+            model_names = ["MobileNetV2"]
+            model_weights = [0.6]
+            secondary_path = Path(
+                os.getenv(
+                    "PLANT_SECONDARY_MODEL_PATH",
+                    str(DEFAULT_SECONDARY_MODEL_PATH),
+                )
+            )
+            if secondary_path.is_file():
+                secondary_checkpoint = torch.load(
+                    secondary_path, map_location="cpu", weights_only=True
+                )
+                if not isinstance(secondary_checkpoint, dict):
+                    raise ValueError("Secondary model checkpoint format is invalid")
+                if secondary_checkpoint.get("architecture") != "efficientnet_b0":
+                    raise ValueError(
+                        "Secondary checkpoint architecture must be efficientnet_b0"
+                    )
+                if secondary_checkpoint.get("classes") != class_names:
+                    raise ValueError(
+                        "Secondary checkpoint classes do not match dataset folders"
+                    )
+                secondary = models.efficientnet_b0(weights=None)
+                secondary.classifier[1] = nn.Linear(
+                    secondary.classifier[1].in_features,
+                    len(class_names),
+                )
+                secondary_state = secondary_checkpoint.get(
+                    "state_dict", secondary_checkpoint
+                )
+                if not isinstance(secondary_state, dict):
+                    raise ValueError(
+                        "Secondary checkpoint state_dict format is invalid"
+                    )
+                secondary_classes = secondary_state.get("classifier.1.weight")
+                if (
+                    secondary_classes is None
+                    or secondary_classes.shape[0] != len(class_names)
+                ):
+                    raise ValueError(
+                        "Secondary checkpoint classifier does not match class count"
+                    )
+                secondary.load_state_dict(secondary_state)
+                secondary.eval()
+                model_set.append(secondary)
+                model_names.append("EfficientNet-B0")
+                model_weights.append(0.4)
+            elif "PLANT_SECONDARY_MODEL_PATH" in os.environ:
+                raise FileNotFoundError(
+                    f"Configured secondary checkpoint not found: {secondary_path}"
+                )
+            else:
+                _logger.info(
+                    "EfficientNet-B0 checkpoint is absent; using MobileNetV2 only."
+                )
+        except (
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            _logger.exception("Could not load image classification models")
             raise HTTPException(
                 status_code=503,
                 detail="Layanan analisis gambar sedang tidak tersedia. Silakan coba lagi nanti.",
@@ -248,7 +349,8 @@ def _model_resources() -> tuple[Any, list[str], Any, Any]:
                 transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
         )
-        _model_bundle = (model, class_names, transform, torch)
+        ensemble = _ProbabilityEnsemble(model_set, model_weights, model_names)
+        _model_bundle = (ensemble, class_names, transform, torch)
         return _model_bundle
 
 
@@ -276,7 +378,7 @@ def _validate_prediction(prediction: str, confidence_percent: float) -> None:
             f"confidence is not finite ({confidence_percent!r})"
             if not math.isfinite(confidence_percent)
             else (
-                f"MobileNetV2 confidence {confidence_percent:.2f}% is below the "
+                f"Classifier confidence {confidence_percent:.2f}% is below the "
                 f"{OOD_CONFIDENCE_THRESHOLD:.2%} threshold for class {prediction!r}"
             )
         )
@@ -323,10 +425,13 @@ def _classify(image_bgr: np.ndarray) -> tuple[str, float]:
     tensor = transform(Image.fromarray(image_rgb)).unsqueeze(0)
     try:
         with torch.inference_mode():
-            probabilities = torch.nn.functional.softmax(model(tensor)[0], dim=0)
+            if isinstance(model, _ProbabilityEnsemble):
+                probabilities = model.probabilities(tensor, torch)[0]
+            else:
+                probabilities = torch.nn.functional.softmax(model(tensor)[0], dim=0)
         confidence, index = torch.max(probabilities, dim=0)
     except (RuntimeError, ValueError) as error:
-        _logger.exception("MobileNetV2 inference failed")
+        _logger.exception("Image classification inference failed")
         raise HTTPException(
             status_code=503,
             detail="Layanan analisis gambar sedang tidak tersedia. Silakan coba lagi nanti.",
@@ -334,10 +439,11 @@ def _classify(image_bgr: np.ndarray) -> tuple[str, float]:
     prediction = class_names[index.item()]
     raw_confidence = float(confidence.item())
     _logger.info(
-        "MobileNetV2 prediction: class=%s confidence=%.6f (%.4f%%)",
+        "Image classification prediction: class=%s confidence=%.6f (%.4f%%) models=%s",
         prediction,
         raw_confidence,
         raw_confidence * 100,
+        ",".join(model.names) if isinstance(model, _ProbabilityEnsemble) else "custom",
     )
     return prediction, raw_confidence * 100
 
@@ -452,6 +558,7 @@ def _analyze(
         humidity_pct=weather["humidity_pct"] if weather else None,
         precipitation_mm=weather["precipitation_mm"] if weather else None,
         disease_name=disease_name,
+        weather_reliability=weather.get("risk_weight", 0.0) if weather else 0.0,
     )
     image_features = numeric_image_features(image_bgr)
     numeric_features = [
@@ -528,14 +635,18 @@ def _analyze(
     record["care_recommendation"] = recommend_care(
         plant_name=plant_name,
         disease_name=disease_name,
+        class_name=prediction,
         is_healthy=is_healthy,
         confidence=confidence,
         health_score=health_score,
+        green_ratio=green_ratio,
         dry_ratio=yellow_ratio,
         temperature_c=weather["temperature_c"] if weather else None,
         humidity_pct=weather["humidity_pct"] if weather else None,
         precipitation_mm=weather["precipitation_mm"] if weather else None,
+        severity=severity,
     )
+    record["risk_analysis"] = record["care_recommendation"]["analysis_metrics"]
     _save_record(record, mask_bytes)
     ai_context_json = build_compact_ai_context(record)
     return {

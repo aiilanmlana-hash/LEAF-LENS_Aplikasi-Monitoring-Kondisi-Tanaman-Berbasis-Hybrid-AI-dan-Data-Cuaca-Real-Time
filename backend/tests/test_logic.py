@@ -10,8 +10,10 @@ import cv2
 import numpy as np
 
 from backend.main import (
+    _ProbabilityEnsemble,
     _analyze,
     _classify,
+    _checkpoint_class_names,
     _numeric_ann_model,
     _plant_village_details,
     _safe_plant_id,
@@ -85,6 +87,27 @@ class FuzzyHealthScoreTests(unittest.TestCase):
         )
         self.assertLess(risky_weather[0], baseline[0])
 
+    def test_historical_weather_has_less_influence_than_current_observation(self):
+        current_score, _ = sugeno_health_score(
+            35,
+            18,
+            temperature_c=28,
+            humidity_pct=90,
+            precipitation_mm=12,
+            disease_name="Late blight",
+            weather_reliability=1.0,
+        )
+        historical_score, _ = sugeno_health_score(
+            35,
+            18,
+            temperature_c=28,
+            humidity_pct=90,
+            precipitation_mm=12,
+            disease_name="Late blight",
+            weather_reliability=0.35,
+        )
+        self.assertGreater(historical_score, current_score)
+
 
 class WeatherLookupTests(unittest.TestCase):
     def test_coordinates_are_required_as_a_pair(self):
@@ -118,6 +141,8 @@ class WeatherLookupTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIsNotNone(weather)
         self.assertIn("BMKG", weather["source"])
+        self.assertEqual(weather["data_quality"], "historical_fallback")
+        self.assertEqual(weather["risk_weight"], 0.35)
         self.assertIsNotNone(weather["station_name"])
         self.assertTrue(0 <= weather["humidity_pct"] <= 100)
 
@@ -147,6 +172,45 @@ class PlantIdValidationTests(unittest.TestCase):
                 self.assertEqual(raised.exception.status_code, 422)
                 self.assertEqual(raised.exception.detail["code"], "ood_image")
                 self.assertEqual(raised.exception.detail["message"], message)
+
+    def test_checkpoint_class_names_work_without_training_dataset(self):
+        names = ["Background_or_Invalid", "Tomato___healthy"]
+        missing_dataset = Path(tempfile.gettempdir()) / "missing-plant-dataset"
+        self.assertEqual(
+            _checkpoint_class_names({"classes": names}, missing_dataset),
+            names,
+        )
+
+    def test_checkpoint_class_names_must_match_dataset_when_present(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            classes_dir = Path(temporary_directory)
+            (classes_dir / "Tomato___healthy").mkdir()
+            self.assertEqual(
+                _checkpoint_class_names(
+                    {"classes": ["Tomato___healthy"]},
+                    classes_dir,
+                ),
+                ["Tomato___healthy"],
+            )
+            with self.assertRaisesRegex(ValueError, "do not match"):
+                _checkpoint_class_names(
+                    {"classes": ["Potato___healthy"]},
+                    classes_dir,
+                )
+
+    def test_checkpoint_class_names_require_sorted_unique_strings(self):
+        for invalid_names in (
+            [],
+            ["Tomato___healthy", "Background_or_Invalid"],
+            ["Tomato___healthy", "Tomato___healthy"],
+            ["Tomato___healthy", 1],
+        ):
+            with self.subTest(class_names=invalid_names):
+                with self.assertRaisesRegex(ValueError, "metadata is invalid"):
+                    _checkpoint_class_names(
+                        {"classes": invalid_names},
+                        Path("/missing-plant-dataset"),
+                    )
 
     def test_classifier_returns_top_class_and_softmax_confidence(self):
         import torch
@@ -228,11 +292,32 @@ class DatasetPreparationTests(unittest.TestCase):
 class ValidationConfidenceTests(unittest.TestCase):
     def test_confidence_distribution_reports_ood_threshold_buckets(self):
         result = _confidence_distribution([0.3, 0.6, 0.75, 0.85, 0.99])
-        self.assertEqual(result["threshold_percent"], 90.0)
-        self.assertEqual(result["below_threshold_count"], 4)
-        self.assertEqual(result["buckets"]["90_to_below_95_percent"]["count"], 0)
-        self.assertEqual(result["buckets"]["95_to_below_99_percent"]["count"], 0)
-        self.assertEqual(result["buckets"]["99_percent_or_higher"]["count"], 1)
+        self.assertEqual(result["threshold_percent"], 70.0)
+        self.assertEqual(result["below_threshold_count"], 2)
+        self.assertEqual(result["buckets"]["70_to_below_80_percent"]["count"], 1)
+        self.assertEqual(result["buckets"]["80_to_below_90_percent"]["count"], 1)
+        self.assertEqual(result["buckets"]["90_percent_or_higher"]["count"], 1)
+
+    def test_weighted_ensemble_averages_model_probabilities(self):
+        import torch
+
+        class FixedLogits(torch.nn.Module):
+            def __init__(self, values):
+                super().__init__()
+                self.values = torch.tensor([values], dtype=torch.float32)
+
+            def forward(self, tensor):
+                return self.values.expand(tensor.shape[0], -1)
+
+        ensemble = _ProbabilityEnsemble(
+            [FixedLogits([2.0, 0.0]), FixedLogits([0.0, 2.0])],
+            [0.6, 0.4],
+            ["MobileNetV2", "EfficientNet-B0"],
+        )
+        actual = ensemble.probabilities(torch.zeros((1, 3, 4, 4)), torch)
+        expected = 0.6 * torch.softmax(torch.tensor([[2.0, 0.0]]), dim=1)
+        expected += 0.4 * torch.softmax(torch.tensor([[0.0, 2.0]]), dim=1)
+        torch.testing.assert_close(actual, expected)
 
 
 class ApiAuthenticationTests(unittest.TestCase):
@@ -381,6 +466,20 @@ class SugenoAndContextTests(unittest.TestCase):
         self.assertIn(
             result["care_recommendation"]["priority"], {"Rutin", "Sedang", "Pantau"}
         )
+        self.assertEqual(
+            result["risk_analysis"],
+            result["care_recommendation"]["analysis_metrics"],
+        )
+        self.assertEqual(result["risk_analysis"]["priority_level"], "Sedang")
+        self.assertEqual(
+            result["risk_analysis"]["fuzzy_health_score"],
+            round(result["health_score"], 1),
+        )
+        self.assertEqual(
+            result["risk_analysis"]["weather_risk_level"], "Tidak tersedia"
+        )
+        self.assertEqual(result["risk_analysis"]["green_area_pct"], 50.0)
+        self.assertEqual(result["risk_analysis"]["affected_area_pct"], 50.0)
 
     def test_ood_class_prediction_is_rejected_before_segmentation(self):
         image = np.zeros((16, 16, 3), dtype=np.uint8)
@@ -448,13 +547,78 @@ class SugenoAndContextTests(unittest.TestCase):
         advice = recommend_care(
             plant_name="Tomato",
             disease_name="Tomato Yellow Leaf Curl Virus",
+            class_name="Tomato___Tomato_Yellow_Leaf_Curl_Virus",
             is_healthy=False,
             confidence=95,
             health_score=35,
+            green_ratio=6,
             dry_ratio=5,
         )
         self.assertEqual(advice["priority"], "Tinggi")
+        self.assertEqual(advice["decision_tree_node"], "urgent_severe_symptoms")
         self.assertIn("tidak menyembuhkan virus", advice["summary"])
+
+    def test_care_decision_tree_uses_weather_and_segmentation_inputs(self):
+        advice = recommend_care(
+            plant_name="Tomato",
+            disease_name="Late blight",
+            class_name="Tomato___Late_blight",
+            is_healthy=False,
+            confidence=82,
+            health_score=68,
+            green_ratio=30,
+            dry_ratio=14,
+            temperature_c=26,
+            humidity_pct=90,
+        )
+        self.assertEqual(advice["decision_tree_node"], "urgent_weather_blight")
+        self.assertEqual(advice["priority"], "Sangat tinggi")
+        self.assertEqual(advice["analysis_metrics"]["priority_level"], "Tinggi")
+        self.assertEqual(advice["analysis_metrics"]["weather_risk_score"], 100.0)
+        self.assertEqual(advice["analysis_metrics"]["weather_risk_level"], "Tinggi")
+        self.assertIn("kelembapan 90%", advice["analysis_metrics"]["weather_summary"])
+        self.assertEqual(advice["analysis_metrics"]["green_area_pct"], 30)
+        self.assertEqual(advice["analysis_metrics"]["affected_area_pct"], 14)
+
+    def test_weather_risk_metrics_are_bounded_and_explain_input_values(self):
+        advice = recommend_care(
+            plant_name="Tomato",
+            disease_name="Early blight",
+            class_name="Tomato___Early_blight",
+            is_healthy=False,
+            confidence=91,
+            health_score=62,
+            green_ratio=38,
+            dry_ratio=12,
+            temperature_c=28,
+            humidity_pct=85,
+            precipitation_mm=2,
+            severity="Perlu perhatian",
+        )
+
+        metrics = advice["analysis_metrics"]
+        self.assertEqual(metrics["weather_risk_level"], "Tinggi")
+        self.assertEqual(metrics["weather_risk_score"], 80)
+        self.assertEqual(metrics["severity"], "Perlu perhatian")
+        self.assertEqual(metrics["leaf_risk_score"], 38)
+        self.assertIn("85%", metrics["weather_summary"])
+        self.assertIn("28.0 °C", metrics["weather_summary"])
+        self.assertIn("bukan probabilitas penyakit", metrics["weather_risk_method"])
+
+    def test_low_confidence_care_advice_requires_verification(self):
+        advice = recommend_care(
+            plant_name="Tomato",
+            disease_name="Late blight",
+            is_healthy=False,
+            confidence=69.99,
+            health_score=40,
+            green_ratio=30,
+            dry_ratio=15,
+        )
+        self.assertEqual(advice["decision_tree_node"], "verification_required")
+        self.assertEqual(
+            advice["analysis_metrics"]["priority_level"], "Perlu verifikasi"
+        )
 
 
 class NumericAnnTests(unittest.TestCase):

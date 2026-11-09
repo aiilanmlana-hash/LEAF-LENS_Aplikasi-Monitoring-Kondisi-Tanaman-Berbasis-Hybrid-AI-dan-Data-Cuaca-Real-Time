@@ -2,13 +2,20 @@
 
 **Aplikasi Monitoring Kondisi Tanaman Berbasis Hybrid AI dan Data Cuaca Real-Time**
 
-Klien Flutter Web LEAF LENS untuk monitoring kondisi tanaman. Aplikasi menggunakan Firebase Email/Password Authentication, Firestore realtime history, browser camera capture, gallery/file upload, client-side dual HSV segmentation, dan endpoint klasifikasi MobileNetV2 FastAPI. Domain Erytheia tetap sama.
+Klien Flutter Web LEAF LENS untuk monitoring kondisi tanaman. Aplikasi menggunakan Firebase Email/Password Authentication, Firestore realtime history, browser camera capture, gallery/file upload, local green/dry HSV preview, dan endpoint klasifikasi MobileNetV2 FastAPI dengan EfficientNet-B0 opsional. Domain Erytheia tetap sama.
 
 The shared web shell uses `assets/landscape.jpg` as a softly blurred, lightly veiled full-screen background. Login, dashboard, scan, and history use optimized, locally bundled artwork supplied for this project; checkerboard backgrounds are removed from decorative cutouts. The latest artwork set includes a forest tree, deer, stump bird, lanterns, stones, a fairy, driftwood, mossy branch, swallow, and reading statue. The project owner confirmed rights to use the supplied Rawpixel artwork. The authentication panel, sidebar, dashboard cards, inputs, navigation, and confirmation dialogs use a layered, earthy macOS Tahoe-inspired glass treatment; no external image host is required.
 
 Typography pairs a restrained Georgia display face with a familiar system sans-serif for controls and body copy. Artwork is kept decorative and pointer-inert, and the interface retains its responsive layouts and reduced-motion behavior.
 
 Subtle fade-and-rise entrances and hover lifts are used on key content cards. They use short transform/opacity animations, do not animate continuously, and honor the operating system's reduced-motion preference.
+
+The scan path bounds uploaded images to 1600 px, yields a frame before starting
+network work, and avoids a synchronous full-image processing pass during normal
+backend analysis. The Glassmorphism surfaces use the existing restrained,
+non-continuous motion; no continuously repainting glow effect is used. These
+choices target responsive interaction, but a 60–120 Hz experience depends on
+the browser, device, image, and network and must be measured on target hardware.
 
 ## Source map
 
@@ -31,6 +38,11 @@ The web project is a Flutter/Dart frontend. Its main code is grouped by purpose:
 Tutorial ini menjalankan LEAF LENS secara lokal dengan dua bagian terpisah:
 FastAPI sebagai backend analisis dan Flutter Web sebagai frontend. Buka dua
 jendela Terminal dan biarkan keduanya tetap berjalan selama aplikasi digunakan.
+Geolokasi browser diminta saat analisis dimulai. Jika izin ditolak, lokasi tidak
+tersedia, atau permintaan melewati batas waktu, aplikasi mengirim koordinat
+default Sidoarjo `(-7.4478, 112.7183)` agar backend tetap mencoba mengambil
+cuaca Open-Meteo dan fallback historis BMKG. Ketersediaan cuaca tetap bergantung
+pada jaringan dan ketersediaan sumber data.
 
 ### 1. Persiapan (sekali saja)
 
@@ -51,6 +63,9 @@ cd web
 flutter pub get
 ```
 
+Jika virtual environment telah dibuat sebelumnya, lewati langkah pembuatan dan
+aktifkan environment yang sudah ada.
+
 ### 2. Jalankan backend LEAF LENS (Terminal 1)
 
 Dari folder utama proyek, aktifkan virtual environment lalu jalankan API:
@@ -63,40 +78,70 @@ PLANT_REQUIRE_AUTH=false python -m uvicorn backend.main:app --reload --host 127.
 Biarkan proses ini berjalan. Buka <http://127.0.0.1:8000/docs> untuk memastikan
 halaman dokumentasi API muncul. `PLANT_REQUIRE_AUTH=false` hanya untuk demo
 lokal; jangan gunakan konfigurasi ini pada server publik.
+Health check dapat diverifikasi di <http://127.0.0.1:8000/health>; respons yang
+diharapkan adalah `{"status":"ok"}`.
 
 ### 3. Jalankan frontend LEAF LENS (Terminal 2)
 
 ```sh
 cd web
-flutter run -d web-server --web-hostname 127.0.0.1 --web-port 5001 --dart-define=PLANT_API_URL=http://localhost:8000
+flutter run -d web-server --web-hostname 127.0.0.1 --web-port 5001 --dart-define=PLANT_API_URL=http://127.0.0.1:8000
 ```
 
 Setelah Terminal 2 menampilkan alamat server, buka
 <http://127.0.0.1:5001>. Jika port 5001 sedang dipakai, pilih port lain dan
-gunakan URL itu di browser. Untuk membuka Chrome secara otomatis, alternatifnya
-jalankan `flutter run -d chrome --dart-define=PLANT_API_URL=http://localhost:8000`.
+gunakan URL itu di browser. Gunakan `localhost` atau `127.0.0.1` agar browser
+menganggap halaman lokal sebagai secure context yang dapat meminta lokasi.
+Untuk membuka Chrome secara otomatis, alternatifnya jalankan
+`flutter run -d chrome --dart-define=PLANT_API_URL=http://127.0.0.1:8000`.
 
 ### 4. Masuk dan mencoba LEAF LENS
 
 1. Buka <http://127.0.0.1:5001>, lalu buat akun atau masuk dengan email dan kata sandi. Akun baru
    harus memverifikasi email terlebih dahulu.
 2. Buka menu **Analisis tanaman**, lalu pilih atau unggah foto daun tomat, kentang, atau jagung.
-3. Isi informasi yang diminta. Koordinat bersifat opsional; jika diisi, backend
-   mencoba mengambil cuaca untuk perhitungan rekomendasi.
+3. Isi informasi tanaman. Saat **Analisis daun** ditekan, izinkan akses lokasi
+   jika browser memintanya. Koordinat manual yang diisi akan diprioritaskan;
+   jika tidak, aplikasi memakai lokasi browser, lalu koordinat default Sidoarjo
+   jika lokasi ditolak atau timeout. Status koordinat yang digunakan tampil di
+   formulir scan.
 4. Tekan tombol analisis dan lihat hasil, cuaca, serta rekomendasi pada kartu
    hasil. Izin kamera browser diperlukan untuk mengambil foto langsung; gunakan
    **Upload foto** jika kamera tidak tersedia.
+
+Jika izin lokasi sebelumnya ditolak, ubah izin **Location** untuk alamat lokal
+LEAF LENS pada pengaturan situs browser, lalu muat ulang halaman. Scan tetap
+mengirim koordinat default saat izin tidak diberikan. Jika cuaca tidak muncul,
+periksa koneksi backend dan akses jaringan ke Open-Meteo; koordinat yang valid
+memungkinkan backend mencoba fallback historis BMKG, tetapi tidak menjamin
+sumber cuaca selalu tersedia.
 
 Firebase Web sudah dikonfigurasi di `lib/firebase_options.dart`. Agar login dan
 riwayat berfungsi, proyek Firebase terkait harus mengaktifkan Email/Password
 Authentication dan Cloud Firestore; rincian pengaturannya ada pada bagian
 Firebase di bawah.
 
+### Menghentikan aplikasi
+
+Tekan `Ctrl+C` di masing-masing Terminal untuk menghentikan frontend dan
+backend. Saat menjalankan ulang, mulai backend terlebih dahulu, kemudian
+frontend. Jika sebuah port masih dipakai, hentikan proses lama atau ubah port
+beserta `PLANT_API_URL` yang sesuai.
+
 ### Status model dan batasan
 
-Checkpoint OOD-aware terbaru sudah dilatih selama tiga epoch dan disimpan
-sebagai `backend/model_daun_plantvillage_full_train.pth`. Evaluasi validation
-terakhir memakai 7.014 gambar setelah 10 duplikat byte-identik dikeluarkan:
+Checkpoint model `*.pth` dan dataset `PlantVillage/` sengaja tidak disertakan
+dalam Git. Untuk memakai inferensi, tempatkan checkpoint MobileNetV2 yang
+kompatibel di `backend/model_daun_plantvillage_full_train.pth` atau set
+`PLANT_MODEL_PATH` ke lokasi checkpoint. Checkpoint harus memuat state dict dan
+metadata `classes` berurutan yang cocok dengan model. Tanpa checkpoint, API
+tetap dapat dimulai tetapi analisis gambar mengembalikan status layanan model
+tidak tersedia. Training/evaluasi juga memerlukan dataset terpisah di
+`PlantVillage/train/` dan `PlantVillage/val/`.
+
+Checkpoint OOD-aware MobileNetV2 yang dipakai dalam evaluasi sebelumnya
+dilatih selama tiga epoch. Evaluasi validation terakhir memakai 7.014 gambar
+setelah 10 duplikat byte-identik dikeluarkan:
 accuracy 98.66%, macro F1 94.88%, dan validation loss 0.04855 pada 19 kelas.
 Angka ini mengukur split validation yang tersedia, bukan jaminan untuk semua
 foto lapangan. OOD mencakup cats/dogs serta contoh wajah dan objek COCO128 yang
@@ -147,8 +192,8 @@ New accounts receive an email-verification link and must verify before entering 
 
 ## Processing and API
 
-The scan screen first runs local HSV segmentation (green and dry-color masks,
-then Open → Close morphology). This is a preview and offline fallback; the Dart
+The scan screen uses a backend-first analysis pipeline. Local HSV segmentation
+produces green and dry-color masks followed by Open → Close morphology. This is a preview and offline fallback; the Dart
 implementation does **not** run K-Means. When available, the backend mask and
 area ratios replace the local ones in the displayed analysis. For a selected front-camera correction, the original image bytes and a mirror
 flag are sent; FastAPI applies that flip before classification. The browser
@@ -161,26 +206,41 @@ POST {PLANT_API_URL}/api/v1/analyze-plant
 
 Inside `backend/main.py`, the API decodes the upload and follows this order:
 
-1. MobileNetV2 resizes the photo to 256 × 256 and predicts the PlantVillage
-   image class and confidence. The backend rejects `Background_or_Invalid`,
-   unsupported classes, and supported-class confidence below 70%; the Web
-   client does not repeat those OOD checks.
+1. MobileNetV2 resizes the photo to 256 × 256. When a trained
+   EfficientNet-B0 checkpoint is configured, the API averages MobileNetV2 and
+   EfficientNet-B0 softmax probabilities using fixed weights 0.60 and 0.40.
+   Otherwise MobileNetV2 is used alone; no secondary checkpoint is currently
+   bundled. The backend rejects `Background_or_Invalid`, unsupported classes,
+   and supported-class confidence below 70%. The Web client uses only the
+   returned `class_name` for the diagnostic status and does not repeat OOD
+   checks.
 2. `backend/segmentation.py` runs sampled CIE-Lab K-Means (up to three color
-   groups), intersects those groups with HSV thresholds, cleans the masks, and
-   measures green/dry area ratios. This is where K-Means is implemented.
+   groups), applies separate HSV criteria to green and dry pigment masks,
+   cleans the masks, and measures area ratios. This is where K-Means is
+   implemented.
 3. The API obtains current or historical weather when coordinates are
-   available; `backend/fuzzy_logic.py` applies Sugeno rules to the area ratios
-   and weather risk for blight, returning a health score/severity. This is
-   rule-based, not a trained model.
-4. `backend/numeric_ann.py` can optionally predict from seven image-derived
+   available; the response labels the source and risk weight. Sugeno rules
+   combine area ratios and blight weather risk. The historical fallback has
+   a lower heuristic risk weight than a current observation; these weights
+   describe provenance and are not calibrated probabilities.
+4. `backend/care_recommendations.py` evaluates the predicted class, green/dry
+   ratios, Sugeno score, temperature, and humidity through a deterministic
+   decision tree and returns triage actions. It is not a trained model or
+   agronomic diagnosis.
+5. `backend/numeric_ann.py` can optionally predict from seven image-derived
    numeric features plus temperature, humidity, and rainfall. The numeric ANN
    is separate from MobileNetV2 and needs an independently labeled
    ten-feature dataset.
 
 The API returns the predicted class, plant and disease names, confidence,
 K-Means-refined green/dry area ratios and mask, current or historical weather,
-Sugeno score/severity, and (when a trained checkpoint and weather are
-available) the numeric ANN result. OOD rejection returns HTTP 422 with
+Sugeno score/severity, structured `risk_analysis` metrics (fuzzy health, inverse
+leaf risk, rule-based weather-risk index and measurements, area ratios, and
+priority), and (when a trained checkpoint and weather are available) the
+numeric ANN result. The scan screen presents these metrics in responsive
+glassmorphism cards, groups emergency/organic/chemical actions separately, and
+keeps the screening and product-label disclaimer in a footer alert. The weather
+index is a heuristic, not a probability of disease. OOD rejection returns HTTP 422 with
 `detail.code = "ood_image"`; malformed or oversized images have separate 4xx
 responses.
 
@@ -245,8 +305,28 @@ available, but the classifier head is reinitialized; the old 38-class
 checkpoint cannot be used directly for inference with the filtered classes.
 Training augmentation includes horizontal flips, rotations up to 10 degrees,
 20% color jitter, and random grayscale (`p=0.1`). The adjacent metrics JSON
-includes validation loss/accuracy and confidence distribution around the 90%
-OOD threshold.
+includes validation loss/accuracy and confidence distribution using the same
+70% OOD rejection threshold as the API.
+
+To train the optional EfficientNet-B0 classifier with the same filtered classes,
+use a separate output checkpoint. Torchvision's ImageNet weights may need to be
+downloaded on the training machine:
+
+```sh
+python -m backend.train_plant_model \
+--architecture efficientnet_b0 \
+--dataset-root PlantVillage \
+--epochs 5 \
+--patience 0 \
+--output backend/model_efficientnet_b0_plantvillage.pth
+```
+
+Only configure `PLANT_SECONDARY_MODEL_PATH` on the API after evaluating the
+checkpoint on a held-out dataset and confirming that its class list matches the
+MobileNetV2 checkpoint. When configured, inference runs both models
+sequentially on the same resized tensor; this improves consensus evidence at
+the cost of additional latency and memory. Benchmark on the actual deployment
+host before enabling it.
 
 Train the ANN from a labeled CSV (columns:
 `green_ratio,dry_ratio,mobilenet_confidence,fuzzy_health_score,mean_hue,mean_saturation,mean_value,temperature_c,humidity_pct,precipitation_mm,label`;

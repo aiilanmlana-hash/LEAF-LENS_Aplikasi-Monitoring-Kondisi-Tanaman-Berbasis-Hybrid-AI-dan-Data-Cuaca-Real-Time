@@ -1,4 +1,4 @@
-"""Train and evaluate MobileNetV2 on the official PlantVillage train/val split."""
+"""Train or evaluate a CNN classifier on the PlantVillage train/val split."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ TARGET_CLASS_PREFIXES = (
     "Tomato___",
 )
 OOD_CLASS_NAME = "Background_or_Invalid"
-CONFIDENCE_THRESHOLD = 0.90
+CONFIDENCE_THRESHOLD = 0.70
 
 
 def _is_target_class(class_name: str) -> bool:
@@ -57,6 +57,12 @@ def _checkpoint_features(state_dict: dict[str, Any]) -> dict[str, Any]:
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--architecture",
+        choices=("mobilenet_v2", "efficientnet_b0"),
+        default="mobilenet_v2",
+        help="Classifier architecture to train or evaluate.",
+    )
+    parser.add_argument(
         "--dataset-root",
         type=Path,
         default=PROJECT_ROOT / "PlantVillage",
@@ -65,13 +71,13 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=PROJECT_ROOT / "backend" / "model_daun_plantvillage_full_train.pth",
+        default=None,
         help="Output checkpoint path consumed by backend.main.",
     )
     parser.add_argument(
         "--initial-checkpoint",
         type=Path,
-        help="Optional earlier MobileNetV2 checkpoint; its backbone is reused and its classifier is reset.",
+        help="Optional checkpoint of the selected architecture; its backbone is reused and its classifier is reset.",
     )
     parser.add_argument(
         "--report",
@@ -98,7 +104,36 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="Persist each improved validation checkpoint while training.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.output is None:
+        filename = (
+            "model_daun_plantvillage_full_train.pth"
+            if args.architecture == "mobilenet_v2"
+            else "model_efficientnet_b0_plantvillage.pth"
+        )
+        args.output = PROJECT_ROOT / "backend" / filename
+    return args
+
+
+def _create_classifier(
+    models: Any,
+    nn: Any,
+    architecture: str,
+    class_count: int,
+    pretrained: bool,
+) -> Any:
+    if architecture == "mobilenet_v2":
+        weights = models.MobileNet_V2_Weights.DEFAULT if pretrained else None
+        model = models.mobilenet_v2(weights=weights)
+        input_features = model.last_channel
+    elif architecture == "efficientnet_b0":
+        weights = models.EfficientNet_B0_Weights.DEFAULT if pretrained else None
+        model = models.efficientnet_b0(weights=weights)
+        input_features = model.classifier[1].in_features
+    else:
+        raise ValueError(f"Unsupported model architecture: {architecture}")
+    model.classifier[1] = nn.Linear(input_features, class_count)
+    return model
 
 
 def _metrics(confusion: np.ndarray) -> dict[str, Any]:
@@ -150,10 +185,10 @@ def _confidence_distribution(confidences: Sequence[float]) -> dict[str, Any]:
         raise ValueError("Validation confidences must be probabilities from 0 to 1.")
 
     buckets = (
-        ("below_90_percent", values < CONFIDENCE_THRESHOLD),
-        ("90_to_below_95_percent", (values >= 0.90) & (values < 0.95)),
-        ("95_to_below_99_percent", (values >= 0.95) & (values < 0.99)),
-        ("99_percent_or_higher", values >= 0.99),
+        ("below_70_percent", values < CONFIDENCE_THRESHOLD),
+        ("70_to_below_80_percent", (values >= 0.70) & (values < 0.80)),
+        ("80_to_below_90_percent", (values >= 0.80) & (values < 0.90)),
+        ("90_percent_or_higher", values >= 0.90),
     )
     return {
         "threshold_percent": CONFIDENCE_THRESHOLD * 100,
@@ -349,20 +384,26 @@ def main() -> None:
     )
 
     if args.evaluate_only:
-        model = models.mobilenet_v2(weights=None)
-        model.classifier[1] = nn.Linear(model.last_channel, len(train_images.classes))
         if not args.output.is_file():
             raise SystemExit(f"Checkpoint does not exist: {args.output}")
         checkpoint = torch.load(args.output, map_location="cpu", weights_only=True)
-        if not isinstance(checkpoint, dict) or checkpoint.get("classes") != train_images.classes:
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("classes") != train_images.classes
+            or checkpoint.get("architecture", "mobilenet_v2") != args.architecture
+        ):
             raise SystemExit(
-                "Checkpoint class names do not match the filtered train/ folders."
+                "Checkpoint architecture or class names do not match the selected "
+                "model and filtered train/ folders."
             )
+        model = _create_classifier(
+            models, nn, args.architecture, len(train_images.classes), pretrained=False
+        )
         model.load_state_dict(checkpoint["state_dict"])
         initialization = "existing filtered-class checkpoint"
     else:
         checkpoint_path = args.initial_checkpoint
-        if checkpoint_path is None:
+        if checkpoint_path is None and args.architecture == "mobilenet_v2":
             checkpoint_path = next(
                 (
                     candidate
@@ -375,13 +416,14 @@ def main() -> None:
                 ),
                 None,
             )
-        weights = (
-            models.MobileNet_V2_Weights.DEFAULT
-            if checkpoint_path is None and not args.no_pretrained
-            else None
+        using_pretrained = checkpoint_path is None and not args.no_pretrained
+        model = _create_classifier(
+            models,
+            nn,
+            args.architecture,
+            len(train_images.classes),
+            pretrained=using_pretrained,
         )
-        model = models.mobilenet_v2(weights=weights)
-        model.classifier[1] = nn.Linear(model.last_channel, len(train_images.classes))
         if checkpoint_path is not None:
             if not checkpoint_path.is_file():
                 raise SystemExit(
@@ -390,6 +432,16 @@ def main() -> None:
             previous_state = torch.load(
                 checkpoint_path, map_location="cpu", weights_only=True
             )
+            previous_architecture = (
+                previous_state.get("architecture", "mobilenet_v2")
+                if isinstance(previous_state, dict)
+                else None
+            )
+            if previous_architecture != args.architecture:
+                raise SystemExit(
+                    "Initial checkpoint architecture does not match "
+                    f"{args.architecture}."
+                )
             feature_state = _checkpoint_features(previous_state)
             current_state = model.state_dict()
             compatible_features = {
@@ -399,17 +451,17 @@ def main() -> None:
             }
             if not compatible_features:
                 raise SystemExit(
-                    f"No compatible MobileNetV2 backbone weights in {checkpoint_path}."
+                    f"No compatible {args.architecture} backbone weights in {checkpoint_path}."
                 )
             model.load_state_dict(compatible_features, strict=False)
             initialization = f"backbone from {checkpoint_path}; new crop classifier head"
         else:
             initialization = (
-                "ImageNet MobileNetV2"
-                if weights is not None
+                f"ImageNet {args.architecture}"
+                if using_pretrained
                 else "random"
                 if args.no_pretrained
-                else "ImageNet MobileNetV2 (checkpoint unavailable)"
+                else f"ImageNet {args.architecture} (checkpoint unavailable)"
             )
     model.to(device)
 
@@ -502,7 +554,7 @@ def main() -> None:
                 f"train_loss={epoch_report['train_loss']:.4f}, "
                 f"val_accuracy={validation_metrics['accuracy']:.2%}, "
                 f"val_macro_f1={score:.4f}, "
-                "val_confidence_below_90="
+                "val_confidence_below_70="
                 f"{validation_metrics['confidence_threshold_distribution']['below_threshold_fraction']:.2%}, "
                 f"seconds={epoch_report['seconds']:.1f}",
                 flush=True,
@@ -523,6 +575,7 @@ def main() -> None:
                         {
                             "state_dict": best_state,
                             "classes": train_images.classes,
+                            "architecture": args.architecture,
                         },
                         temporary_checkpoint,
                     )
@@ -544,13 +597,19 @@ def main() -> None:
             {
                 "state_dict": model.cpu().state_dict(),
                 "classes": train_images.classes,
+                "architecture": args.architecture,
             },
             args.output,
         )
     report_path = args.report or args.output.with_suffix(".metrics.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report = {
-        "model": "MobileNetV2",
+        "model": (
+            "MobileNetV2"
+            if args.architecture == "mobilenet_v2"
+            else "EfficientNet-B0"
+        ),
+        "architecture": args.architecture,
         "evaluation_mode": (
             "existing_checkpoint" if args.evaluate_only else "train_and_evaluate"
         ),

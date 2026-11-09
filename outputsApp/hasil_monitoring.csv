@@ -1,6 +1,0 @@
-﻿waktu_pemrosesan,id_tanaman,lokasi,nama_file,total_piksel,piksel_hijau,piksel_kering,persentase_hijau,hsv_bawah,hsv_atas,ukuran_kernel,file_mask,kondisi_daun,keyakinan_ai
-2026-11-04 09:34:54,P001,Kebun Percobaan,camera-input-2026-11-04T02_34_14.319Z.jpg,617272,183930,70577,29.8,"[25, 35, 30]","[95, 255, 255]",5,outputsApp/masks/P001_20261104_093454_mask.png,DAUN HIJAU SEHAT,93.55%
-2026-11-04 09:35:11,P001,Kebun Percobaan,camera-input-2026-11-04T02_35_05.492Z.jpg,617272,14838,144046,2.4,"[25, 35, 30]","[95, 255, 255]",5,outputsApp/masks/P001_20261104_093511_mask.png,DAUN KERING ATAU LAYU,60.36%
-2026-11-04 09:35:31,P002,Kebun Percobaan,camera-input-2026-11-04T02_35_05.492Z.jpg,617272,14838,144046,2.4,"[25, 35, 30]","[95, 255, 255]",5,outputsApp/masks/P002_20261104_093531_mask.png,DAUN KERING ATAU LAYU,60.36%
-2026-11-04 09:37:09,P001_Daun,Politeknik Negeri Jember,camera-input-2026-11-04T02_36_44.760Z.jpg,617272,154913,60505,25.1,"[25, 35, 30]","[95, 255, 255]",5,outputsApp/masks/P001_Daun_20261104_093709_mask.png,DAUN HIJAU SEHAT,89.58%
-2026-11-04 09:37:38,P002_Daun,Politeknik Negeri Jember,camera-input-2026-11-04T02_37_27.646Z.jpg,617272,12519,157992,2.03,"[25, 35, 30]","[95, 255, 255]",5,outputsApp/masks/P002_Daun_20261104_093738_mask.png,DAUN KERING ATAU LAYU,57.68%

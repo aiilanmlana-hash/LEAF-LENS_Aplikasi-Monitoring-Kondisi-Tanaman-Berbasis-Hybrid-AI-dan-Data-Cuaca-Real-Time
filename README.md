@@ -3,10 +3,16 @@
 **Aplikasi Monitoring Kondisi Tanaman Berbasis Hybrid AI dan Data Cuaca Real-Time**
 
 LEAF LENS tersedia melalui domain Erytheia yang tetap digunakan untuk aplikasi
-ini. Repository berisi aplikasi Flutter Web (`web/`), API analisis gambar
-FastAPI (`backend/`), aplikasi Flutter mobile terpisah (`mobile/`), dan
-eksperimen OpenCV desktop. Aplikasi Web menggunakan API untuk analisis AI;
-aplikasi Web bukan server Python atau machine-learning.
+ini. Repository ini berisi API analisis gambar FastAPI (`backend/`), frontend
+Flutter Web (`web/`), workflow CI, dan dokumentasi resmi. Aplikasi Web memakai
+API untuk analisis; klasifikasi gambar dijalankan di backend.
+
+Dataset PlantVillage, checkpoint model (`*.pth`, `*.h5`), output runtime,
+aplikasi mobile terpisah, dan skrip eksperimen lama tidak dilacak di repository.
+Untuk menjalankan inferensi, sediakan checkpoint MobileNetV2 yang kompatibel
+secara terpisah; metadata nama kelas dibaca dari checkpoint sehingga dataset
+tidak diperlukan untuk inference. Dataset tetap diperlukan secara lokal untuk
+melatih atau mengevaluasi model.
 
 Panduan menjalankan aplikasi Web secara lokal ada di
 [tutorial LEAF LENS](web/README.md#tutorial-menjalankan-web-secara-lokal).
@@ -19,6 +25,7 @@ Project_Klasifikasi_Daun/
 │   ├── main.py              # HTTP endpoints, pipeline, persistence
 │   ├── segmentation.py      # HSV + Lab K-Means segmentation
 │   ├── fuzzy_logic.py       # Sugeno health score and severity
+│   ├── care_recommendations.py # Deterministic triage decision tree
 │   ├── numeric_ann.py      # Optional ANN for numeric measurements
 │   ├── train_plant_model.py  # Train/evaluate image classifier
 │   └── train_numeric_ann.py # Train optional numeric ANN from labeled CSV
@@ -30,14 +37,6 @@ Project_Klasifikasi_Daun/
 │       ├── models/          # Analysis data model
 │       ├── theme/           # Colors and app theme
 │       └── widgets/         # Shared interface components
-├── mobile/                  # Separate Flutter mobile application
-├── PlantVillage/
-│   ├── train/<class>/       # Training images, grouped by class
-│   └── val/<class>/         # Validation images, same class folders
-├── outputsApp/              # Generated analysis data and evaluation reports
-├── model_daun*.pth          # Trained MobileNetV2 checkpoints
-├── app_praktikum_streamlit.py, train.py, detect_webcam*.py
-│                            # Earlier/standalone desktop experiments
 └── README.md                # Main project and processing guide
 ```
 
@@ -62,17 +61,25 @@ Project_Klasifikasi_Daun/
 2. `PlantApiService` asynchronously sends the image, plant ID, location,
    optional latitude/longitude, and HSV/morphology settings as a multipart
    request to `POST /api/v1/analyze-plant`.
-3. `backend/main.py` classifies the image with MobileNetV2 first. The OOD guard
-   rejects `Background_or_Invalid`, unsupported classes, and supported-class
-   confidence below 70% before segmentation or persistence. Flutter Web uses
-   the raw `class_name` to show status: only a `healthy` model label is healthy.
+3. `backend/main.py` classifies with MobileNetV2. If a separately trained
+   EfficientNet-B0 checkpoint is configured, the API averages their softmax
+   probabilities at weights 0.60 and 0.40. Without that checkpoint, it
+   explicitly uses MobileNetV2 alone. The OOD guard rejects
+   `Background_or_Invalid`, unsupported classes, and confidence below 70%
+   before segmentation or persistence. Flutter Web uses only the backend
+   `class_name` to show status: only a `healthy` model label is healthy.
 4. For accepted predictions, the backend runs:
    - `backend/segmentation.py`: converts pixels to Lab, groups sampled colors
      into up to three K-Means clusters, intersects cluster colors with HSV
-     thresholds, cleans the masks, and measures green/dry pixel percentages.
+     thresholds for green and dry regions, cleans the masks, and measures area
+     percentages.
    - `backend/fuzzy_logic.py`: Sugeno fuzzy rules turn the green and dry
-     percentages into a 0–100 health score and a severity label, with a modest
-     weather-risk adjustment for blight when weather is available.
+     percentages into a 0–100 health score. Weather provenance is recorded;
+     current observations use full risk weight and historical fallback has a
+     documented lower heuristic weight.
+   - `backend/care_recommendations.py`: a deterministic decision tree combines
+     the predicted class, green/dry area, fuzzy score, and temperature/humidity
+     into a triage node and cautious actions.
    - `backend/numeric_ann.py`: when a trained checkpoint and weather are
      available, an optional numeric ANN predicts `healthy`, `dry`, or `infected`
      from seven image measurements plus temperature, humidity, and rainfall.
@@ -132,7 +139,7 @@ python -m pip install -r backend/requirements.txt
 PLANT_REQUIRE_AUTH=false uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-`POST /api/v1/analyze-plant` accepts a multipart `image` plus optional `plant_id`, `location`, latitude/longitude, HSV minima/range, and odd morphology `kernel_size`. The API returns HTTP 422 with `code: "ood_image"` when the prediction is `Background_or_Invalid`, is outside the Corn/Potato/Tomato classes, or has confidence below 70%. The softmax threshold is `OOD_CONFIDENCE_THRESHOLD = 0.70`; inference confidence is serialized as a percentage. The response for accepted predictions includes segmentation ratios, prediction/confidence, weather-aware fuzzy score, structured care recommendations, and a base64 mask.
+`POST /api/v1/analyze-plant` accepts a multipart `image` plus optional `plant_id`, `location`, latitude/longitude, HSV minima/range, and odd morphology `kernel_size`. The API returns HTTP 422 with `code: "ood_image"` when the prediction is `Background_or_Invalid`, is outside the Corn/Potato/Tomato classes, or has confidence below 70%. The softmax threshold is `OOD_CONFIDENCE_THRESHOLD = 0.70`; inference confidence is serialized as a percentage. The response for accepted predictions includes segmentation ratios, prediction/confidence, weather-aware fuzzy score, structured care recommendations, and a base64 mask. Its `risk_analysis` object exposes the fuzzy health and inverse leaf-risk scores, rule-based weather-risk index and source measurements, HSV green/affected area percentages, severity, and a normalized priority level. The weather index is an explainable heuristic, not a probability of disease.
 
 Monitoring records are stored in SQLite at `outputsApp/monitoring_api.sqlite3`, appended to `outputsApp/monitoring_api.csv`, and their masks are saved in `outputsApp/masks/`. `GET /api/v1/history` returns records and `GET /api/v1/history/export.csv` downloads a CSV export. Interactive API docs are available at `/docs`.
 
@@ -192,8 +199,8 @@ to load it rather than serving mismatched labels.
 The command writes a neighboring `*.metrics.json` report with pre/post-filter
 validation sizes, number of exact duplicates excluded, per-class
 support/precision/recall/F1, aggregate metrics, confusion matrix, validation
-loss and accuracy, validation confidence distribution around the configured
-90% OOD threshold, device, and epoch history when training occurs. Re-evaluate an
+loss and accuracy, validation confidence distribution around the 70% OOD
+threshold, device, and epoch history when training occurs. Re-evaluate an
 existing checkpoint without training with the `--evaluate-only` flag. For an interrupted training run,
 `--save-best-each-epoch` keeps the best completed-epoch checkpoint so it can
 still be evaluated without restarting:
@@ -212,15 +219,23 @@ compatible feature backbone in the previous checkpoint, with a newly initialized
 19-class head and the latest OOD examples. After excluding 10 byte-identical
 validation files that also occur in train, the selected checkpoint evaluated
 7,014 images. It recorded 98.66% accuracy, 94.26% macro precision, 95.86%
-macro recall, 94.88% macro F1, and 0.04855 validation loss. The stored 60%
-confidence distribution is historical: 58/7,014 (0.83%) predictions were below
-that threshold. The trainer's confidence distribution is historical; backend
-inference uses a separate 70% OOD threshold.
-The best checkpoint is `backend/model_daun_plantvillage_full_train.pth`;
-`outputsApp/pbl_plantvillage_metrics.json` contains its metrics, per-class
-results, and confidence distribution. The separate
-`outputsApp/pbl_baseline_metrics.json` is an earlier baseline report and is
-not the active model's performance report.
+macro recall, 94.88% macro F1, and 0.04855 validation loss. These are
+single-model validation results; they do not measure an ensemble. Runtime OOD
+rejection is fixed at 70%.
+The best checkpoint was produced at
+`backend/model_daun_plantvillage_full_train.pth`; checkpoint and generated
+`outputsApp/` evaluation reports are intentionally excluded from Git. Preserve
+the checkpoint and evaluation report as separately managed project artifacts.
+The separate `outputsApp/pbl_baseline_metrics.json` is an earlier baseline
+report and is not the active model's performance report.
+
+An EfficientNet-B0 secondary model can be trained with the same trainer by
+passing `--architecture efficientnet_b0` and writing a separate checkpoint.
+It is not bundled or enabled by default. To enable inference-time probability
+averaging, configure `PLANT_SECONDARY_MODEL_PATH` with the evaluated
+EfficientNet-B0 checkpoint; the API uses MobileNetV2 0.60 and EfficientNet-B0
+0.40 weights. Evaluate the ensemble separately before reporting ensemble
+metrics or enabling it for deployment.
 
 These are results on the available validation split, not a substitute for a
 separate field-photo test set. Exact SHA-256 filtering does not detect
@@ -299,8 +314,32 @@ prepare a dated source archive, a list of model/dataset/asset licences, evidence
 of permission for third-party assets, and a clear statement of what is original.
 PlantVillage and pretrained model components must be attributed and used under
 their respective licences; consult an Indonesian HKI professional for the filing
-requirements and ownership decision.
+requirements and ownership decision. See
+[LEGAL_ATTRIBUTION.md](./LEGAL_ATTRIBUTION.md) for the current inventory and
+[HKI_SUBMISSION_GUIDE.md](./HKI_SUBMISSION_GUIDE.md) for a draft evidence/print
+checklist and statement template.
 
-## Flutter mobile app
+## Multi-Stage Hybrid Pipeline Validation and Workflow Originality
 
-See [`mobile/README.md`](mobile/README.md) for Flutter setup, API URL configuration, and device permission notes. The mobile app uses Provider for state, SQLite for on-device monitoring history, and provides camera/gallery capture, adjustable segmentation parameters, mask previews, speech feedback, dashboard metrics/chart, and CSV/PDF sharing.
+This title names the staged validation workflow described below; it does not
+assert patentability or a legally established invention.
+
+The project-specific contribution is the orchestration of a staged screening
+workflow: (1) MobileNetV2 classification with an optional, explicitly
+checkpoint-gated EfficientNet-B0 probability ensemble; (2) rejection of the
+reserved OOD class, unsupported crops, or consensus confidence below 70%;
+(3) Lab color grouping constrained by separate HSV green/dry masks; (4)
+Sugeno scoring whose weather adjustment is weighted by the provenance of
+current versus historical weather; and (5) a deterministic care-triage tree
+that combines the predicted class, segmented areas, health score, and weather.
+This describes the implementation, not proof of legal novelty. Current
+published model metrics apply to MobileNetV2 alone; an ensemble result requires
+training and held-out evaluation of both models.
+
+| Pipeline stage | Project-specific integration | Evidence still needed |
+|---|---|---|
+| CNN consensus | Optional 0.60/0.40 MobileNetV2/EfficientNet-B0 probability averaging | Train and evaluate the second model and ensemble; no EfficientNet checkpoint is bundled. |
+| OOD validation | Reject non-target class or confidence below 0.70 before segmentation/storage | Held-out field/non-leaf evaluation and false-acceptance analysis. |
+| Pigment validation | Lab K-Means clusters gated by distinct HSV green/dry masks | Independent segmentation ground truth and comparison baseline. |
+| Weather-aware fuzzy score | Weather source provenance weights the blight risk adjustment | Calibrate heuristic source weights against independent weather/outcome data. |
+| Action triage | Decision tree combines class, areas, health score, temperature, and humidity | Review advice with agronomy experts and validate on real field cases. |

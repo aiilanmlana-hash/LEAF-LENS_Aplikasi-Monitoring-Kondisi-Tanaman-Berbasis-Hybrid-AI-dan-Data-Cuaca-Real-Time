@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 
@@ -47,8 +49,8 @@ class CurrentWeather {
 }
 
 class WeatherService {
-  static const defaultLatitude = -7.45;
-  static const defaultLongitude = 112.72;
+  static const defaultLatitude = -7.4478;
+  static const defaultLongitude = 112.7183;
   static const defaultLocationName = 'Sidoarjo';
 
   WeatherService({
@@ -160,6 +162,24 @@ class WeatherService {
       latitude <= 90 &&
       longitude >= -180 &&
       longitude <= 180;
+
+  static Future<WeatherCoordinates?> resolveDeviceCoordinates() async {
+    try {
+      return await _resolveDeviceLocation().timeout(
+        const Duration(seconds: 12),
+      );
+    } on TimeoutException {
+      return null;
+    } on PermissionDeniedException {
+      return null;
+    } on LocationServiceDisabledException {
+      return null;
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
 
   static Future<WeatherCoordinates?> _resolveDeviceLocation() async {
     if (!await Geolocator.isLocationServiceEnabled().timeout(

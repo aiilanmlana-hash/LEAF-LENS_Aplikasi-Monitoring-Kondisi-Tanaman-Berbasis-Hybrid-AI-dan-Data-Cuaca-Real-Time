@@ -106,6 +106,54 @@ void main() {
     client.close();
   });
 
+  test(
+    'always sends default Sidoarjo coordinates when location is unavailable',
+    () async {
+      final client = MockClient((request) async {
+        expect(request, isA<http.Request>());
+        expect(request.body, contains('name="latitude"'));
+        expect(request.body, contains('-7.4478'));
+        expect(request.body, contains('name="longitude"'));
+        expect(request.body, contains('112.7183'));
+        return http.Response('{"status":"ok"}', 200);
+      });
+      final service = PlantApiService(
+        client: client,
+        idTokenProvider: () async => null,
+      );
+      addTearDown(service.dispose);
+
+      await _classify(service);
+    },
+  );
+
+  test('replaces an invalid coordinate pair with valid defaults', () async {
+    final client = MockClient((request) async {
+      expect(request.body, contains('-7.4478'));
+      expect(request.body, contains('112.7183'));
+      return http.Response('{"status":"ok"}', 200);
+    });
+    final service = PlantApiService(
+      client: client,
+      idTokenProvider: () async => null,
+    );
+    addTearDown(service.dispose);
+
+    await service.classify(
+      imageBytes: Uint8List.fromList([1, 2, 3]),
+      imageName: 'leaf.jpg',
+      plantId: 'P001',
+      location: 'Sidoarjo',
+      hueMin: 25,
+      hueMax: 95,
+      saturationMin: 35,
+      valueMin: 30,
+      kernelSize: 5,
+      latitude: -7.45,
+      longitude: 999,
+    );
+  });
+
   test('preserves low-confidence prediction from API', () async {
     final service = PlantApiService(
       client: MockClient(

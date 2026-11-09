@@ -54,6 +54,7 @@ def sugeno_health_score(
     humidity_pct: float | None = None,
     precipitation_mm: float | None = None,
     disease_name: str | None = None,
+    weather_reliability: float = 1.0,
 ) -> tuple[float, str]:
     """Apply bounded memberships and Sugeno singleton weighted-average rules."""
     if not math.isfinite(green_ratio) or not math.isfinite(dry_ratio):
@@ -90,6 +91,8 @@ def sugeno_health_score(
     if all(value is not None for value in weather_values):
         if not all(math.isfinite(value) for value in weather_values if value is not None):
             raise ValueError("Weather values must be finite numbers.")
+        if not math.isfinite(weather_reliability) or not 0 <= weather_reliability <= 1:
+            raise ValueError("Weather reliability must be a finite value from 0 to 1.")
         is_blight = "blight" in (disease_name or "").casefold()
         if is_blight:
             # High humidity plus warmth is a disease-risk rule, not a diagnosis.
@@ -100,7 +103,7 @@ def sugeno_health_score(
                 min(humid_membership, warm_membership),
                 min(humid_membership, rain_membership),
             )
-            score -= 15.0 * combined_risk
+            score -= 15.0 * combined_risk * weather_reliability
 
     score = round(float(np.clip(score, 0.0, 100.0)), 1)
     severity = "Sehat" if score >= 75 else "Perlu perhatian" if score >= 50 else "Kritis"

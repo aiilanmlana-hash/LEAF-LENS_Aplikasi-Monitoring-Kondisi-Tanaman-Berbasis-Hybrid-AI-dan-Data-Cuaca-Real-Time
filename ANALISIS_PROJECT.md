@@ -1,9 +1,10 @@
 # Analisis Lengkap Smart Plant Monitoring & AI Detection
 
-Dokumen ini merangkum struktur source code, perjalanan arsitektur yang dapat
-dibuktikan dari repository, alur data, algoritma, parameter training, cara
-memperoleh dataset, hasil evaluasi, dan keterbatasan yang perlu dijelaskan saat
-presentasi.
+Dokumen ini merangkum struktur source code FastAPI dan Flutter Web yang
+dilacak, alur data, algoritma, parameter training, cara memperoleh dataset,
+hasil evaluasi, serta keterbatasan yang perlu dijelaskan saat presentasi.
+Dataset, checkpoint model, output runtime, aplikasi mobile terpisah, dan skrip
+eksperimen tidak disertakan dalam snapshot Git yang dibersihkan.
 
 ## 1. Ringkasan proyek
 
@@ -16,8 +17,9 @@ memiliki tugas berbeda:
 2. **FastAPI** menerima foto dari Flutter, memvalidasi request, menjalankan
    klasifikasi MobileNetV2 dan segmentasi citra, lalu menggabungkan hasil cuaca,
    fuzzy Sugeno, rekomendasi, serta penyimpanan.
-3. **MobileNetV2** adalah classifier gambar yang dilatih untuk memilih satu
-   kelas penyakit/keadaan dari 19 kelas hasil training sekarang.
+3. **MobileNetV2** adalah classifier utama gambar. Backend dapat menggabungkan
+   softmax-nya dengan EfficientNet-B0 yang dilatih terpisah; tanpa checkpoint
+   sekunder yang valid, runtime tetap memakai MobileNetV2 saja.
 4. **K-Means + HSV** adalah segmentasi warna berbasis piksel untuk mengukur
    proporsi area hijau dan kuning/cokelat. K-Means bukan classifier penyakit.
 5. **Fuzzy Sugeno** adalah perhitungan berbasis aturan untuk skor kesehatan dan
@@ -45,9 +47,9 @@ Yang dapat disimpulkan dari source:
 
 - Ada script eksperimen awal: `train.py`, `detect_webcam.py`,
   `detect_webcam_praktikum.py`, dan `app_praktikum_streamlit.py`.
-- Kemudian/selain eksperimen tersebut, repository menyediakan backend
-  FastAPI, Flutter Web, serta Flutter mobile sebagai aplikasi yang lebih
-  terstruktur.
+- Snapshot repository yang dibersihkan melacak backend FastAPI dan Flutter
+  Web sebagai aplikasi utama. Versi sebelumnya juga memuat aplikasi mobile
+  terpisah, tetapi source mobile tidak termasuk snapshot ini.
 - Kebutuhan pengembangan berikutnya menambahkan segmentasi K-Means berbantuan
   HSV, fuzzy Sugeno, cuaca, OOD, rekomendasi, autentikasi, dan riwayat.
 
@@ -91,29 +93,15 @@ kebutuhan proyek, bukan tanggal kronologis yang dibuktikan oleh Git.
 | `web/test/` | Tes widget, image processing, dan kontrak request API. |
 | `web/firebase.json`, `web/firestore.rules`, `web/firestore.indexes.json` | Konfigurasi Firebase Web, aturan, dan indeks Firestore. |
 
-### Flutter Mobile dan eksperimen lama
+### Artefak yang tidak dilacak
 
-- `mobile/lib/main.dart`, `mobile/lib/screens/`, `mobile/lib/providers/`,
-  `mobile/lib/services/`, `mobile/lib/models/`, dan `mobile/README.md`
-  membentuk aplikasi Flutter terpisah. Mobile menggunakan Provider dan juga
-  berkomunikasi dengan FastAPI; penyimpanan/riwayat mobile tidak identik dengan
-  penyimpanan Web.
-- `train.py` adalah trainer eksperimen lama: folder dataset khusus
-  `PlantVillage/tomat_kentang`, resize 128 × 128, maksimal 1.000 gambar,
-  dua epoch, Adam, dan checkpoint `model_daun.pth`. Itu bukan konfigurasi
-  trainer backend sekarang.
-- `detect_webcam.py` dan `detect_webcam_praktikum.py` adalah eksperimen
-  kamera desktop OpenCV. Keduanya memakai MobileNetV2/HSV dengan perilaku
-  dan preprocessing versi lama; jangan disamakan dengan endpoint FastAPI.
-- `app_praktikum_streamlit.py` adalah prototipe Streamlit yang melakukan
-  kamera/upload, HSV, prediksi, suara lokal, dan penyimpanan CSV. Ia bukan
-  frontend Flutter saat ini.
-- `.github/workflows/flutter-web.yml` menjalankan pemeriksaan/build aplikasi
-  di `mobile/`; `flutter-web-folder.yml` menjalankan pemeriksaan/build aplikasi
-  di `web/`.
-- `PlantVillage/`, aset gambar UI, checkpoint `.pth`, CSV cuaca, file
-  keluaran, cache, dan virtual environment adalah data/biner/hasil/config;
-  fungsinya tidak dapat dijelaskan sebagai baris source code.
+Skrip eksperimen lama (`train.py`, `detect_webcam*.py`, dan
+`app_praktikum_streamlit.py`), aplikasi mobile terpisah, dataset PlantVillage,
+checkpoint `.pth`/`.h5`, dan `outputsApp/` runtime sengaja dikeluarkan dari Git.
+`backend/train_plant_model.py` tetap menjadi trainer utama. Untuk menggunakan
+inference tanpa dataset, backend mengambil urutan label dari metadata `classes`
+pada checkpoint; dataset tetap diperlukan jika model hendak dilatih ulang.
+Workflow CI yang dipertahankan hanya memeriksa aplikasi di `web/`.
 
 ## 4. Dataset dan cara mengambil dataset dari Kaggle
 
@@ -244,10 +232,13 @@ foto non-daun yang terpisah dan beragam.
    JPEG/PNG/WebP, dimensi maksimum 25 juta piksel, koordinat, parameter HSV,
    ID, serta ukuran kernel.
 3. Gambar dikonversi ke BGR dan optional horizontal flip diterapkan.
-4. MobileNetV2 mengeluarkan logits. Softmax mengubah logits menjadi
-   probabilitas; kelas probabilitas maksimum dan confidence persen dipilih.
+4. MobileNetV2 mengeluarkan logits. Jika checkpoint EfficientNet-B0 yang telah
+   dilatih tersedia, softmax kedua model dirata-ratakan dengan bobot 0.60 dan
+   0.40; jika tidak, sistem secara eksplisit hanya memakai MobileNetV2.
+   Confidence maksimum classifier (konsensus bila model kedua aktif) dipakai
+   untuk keputusan.
 5. Guardrail menolak kelas `Background_or_Invalid`, kelas di luar target,
-   confidence non-finite, atau confidence **di bawah 90%**. Penolakan terjadi
+   confidence non-finite, atau confidence **di bawah 70%**. Penolakan terjadi
    sebelum segmentasi backend, fuzzy, rekomendasi dan penyimpanan.
 6. Untuk prediksi yang lolos, backend menjalankan K-Means/HSV segmentation,
    memperoleh rasio hijau/kering, kemudian mencoba mengambil cuaca jika
@@ -256,6 +247,20 @@ foto non-daun yang terpisah dan beragam.
    menjadi input ANN numerik hanya bila checkpoint ANN 10-fitur dikonfigurasi.
 8. Backend membuat rekomendasi, menyimpan record lokal dan mask, lalu
    mengirim JSON hasil + mask base64 ke Flutter.
+
+### Multi-Stage Hybrid Pipeline Validation dan Orisinalitas Alur
+
+Orisinalitas yang dideskripsikan di sini adalah susunan dan integrasi modul
+yang dapat diverifikasi dari source, bukan klaim bahwa setiap algoritma dasar
+baru atau bahwa kebaruan paten telah terbukti.
+
+| Tahap pipeline | Aturan alur dalam implementasi | Batas bukti saat ini |
+|---|---|---|
+| Dual-CNN consensus | MobileNetV2 dan checkpoint EfficientNet-B0 opsional menghasilkan probabilitas softmax yang dirata-ratakan 0.60/0.40. | Belum ada checkpoint EfficientNet-B0 yang disediakan; hasil uji/angka yang ada hanya untuk MobileNetV2. |
+| OOD gate | Tolak kelas OOD/non-target dan confidence consensus di bawah 0.70 sebelum segmentasi atau persistensi. | Ambang adalah guardrail softmax, bukan jaminan semua non-daun tertolak. |
+| Dual-color mask | K-Means Lab memilih kelompok warna, lalu ambang HSV terpisah membentuk area hijau dan kering. | Ini pengukuran warna piksel, bukan deteksi semantik daun. |
+| Weather-weighted Sugeno | Sugeno menggabungkan rasio area; metadata sumber cuaca memodulasi pengaruh risiko penyakit. | Bobot sumber adalah heuristik provenance, bukan probabilitas cuaca yang terkalibrasi. |
+| Decision-tree triage | Kelas penyakit, rasio hijau/kering, skor fuzzy, suhu, dan kelembapan memilih cabang verifikasi/risiko/tindakan. | Saran merupakan skrining awal, bukan diagnosis atau resep perlakuan. |
 
 ### Bentuk input dan output
 
@@ -270,7 +275,17 @@ foto non-daun yang terpisah dan beragam.
   `detail.code = "ood_image"`, dan pesan bahwa objek bukan daun Corn, Potato,
   atau Tomato yang valid.
 
-## 6. MobileNetV2: classifier utama
+## 6. Classifier CNN dan ensemble bersyarat
+
+MobileNetV2 tetap menjadi model default dan merupakan satu-satunya checkpoint
+yang tersedia dalam repository ini. Jika checkpoint EfficientNet-B0 yang telah
+ditraining pada daftar kelas sama ditentukan melalui
+`PLANT_SECONDARY_MODEL_PATH`, API menjalankan kedua model pada tensor masukan
+yang sama dan menghitung rata-rata probabilitas softmax berbobot 0.60 dan
+0.40. Checkpoint sekunder yang hilang atau tidak valid tidak menghasilkan
+fallback diam-diam: tanpa konfigurasi API memakai MobileNetV2 saja; bila
+path dikonfigurasi tetapi checkpoint tidak valid, startup/inferensi model
+melaporkan layanan tidak tersedia.
 
 ### Cara model mengubah gambar menjadi kelas
 
@@ -289,6 +304,12 @@ MobileNetV2 adalah CNN berbasis depthwise separable convolution dan inverted
 residual blocks. Detail blok internal berasal dari arsitektur torchvision
 MobileNetV2; proyek mengubah layer classifier terakhir agar jumlah output
 sesuai jumlah kelas dataset.
+
+EfficientNet-B0 dapat dilatih melalui `backend.train_plant_model` dengan
+`--architecture efficientnet_b0` dan output checkpoint terpisah. Evaluasi
+checkpoint itu dan ensemble harus dilakukan pada data held-out sebelum
+mengaktifkannya atau melaporkan metrik ensemble. Bobot ensemble 0.60/0.40
+adalah bobot probabilitas yang ditetapkan, bukan hasil optimasi empiris.
 
 ### Kenapa memakai bobot awal (transfer learning)
 
@@ -343,9 +364,10 @@ Hasil dicatat di `outputsApp/pbl_plantvillage_metrics.json`:
 - Macro recall: **95.86%**
 - Macro F1: **94.88%**
 - Validation confidence rata-rata: **98.70%**
-- Confidence di bawah threshold historis 60%: **58 / 7.014 = 0.83%**
-- Distribusi confidence tersebut dihitung sebelum threshold runtime dinaikkan ke
-   90%; jalankan ulang evaluasi untuk distribusi threshold terbaru.
+- Threshold OOD inference saat ini: **70%**.
+- Distribusi confidence dalam laporan arsip dihitung pada evaluasi terdahulu;
+   angka tersebut bukan hasil pengujian ensemble dan tidak mengubah threshold
+   runtime saat ini.
 - Hasil kelas `Background_or_Invalid`: precision, recall, dan F1 masing-masing
   **99.95%** pada 2.063 sampel validation.
 - Checkpoint: `backend/model_daun_plantvillage_full_train.pth`
@@ -413,14 +435,6 @@ berbeda.
 Flutter menjalankan versi HSV sederhana hanya untuk preview/offline fallback.
 Ia tidak menjalankan K-Means. Jika API gagal, UI lokal tidak boleh dianggap
 sebagai prediksi penyakit oleh MobileNet.
-
-Flutter Mobile menggunakan API backend yang sama, tetapi implementasinya
-berbeda: `mobile/lib/services/plant_api_service.dart` mengubah error menjadi
-exception umum, dan `MonitoringProvider` menampilkan error umum pada state
-aplikasi. Mobile client yang ditinjau tidak mengirim latitude/longitude, jadi
-jalur cuaca/fuzzy berbasis cuaca yang dipakai form Web tidak aktif dari Mobile.
-Karena source set ini memiliki dua aplikasi Flutter, jangan menganggap semua
-perilaku UI atau penyimpanan keduanya identik.
 
 ## 8. Fuzzy Sugeno: aturan skor kesehatan
 
@@ -548,14 +562,14 @@ Di source backend saat ini, prediksi `Tomato___Early_blight` dengan 29.3%
 seharusnya menghasilkan HTTP 422 sebelum segmentasi, fuzzy, rekomendasi dan
 penyimpanan. Jadi tampilan hasil 29.3% bukan perilaku yang diharapkan dari
 backend yang menjalankan source terbaru; periksa server/port dan versi
-frontend. Runtime menolak confidence di bawah 90%; class `Background_or_Invalid`
+frontend. Runtime menolak confidence di bawah 70%; class `Background_or_Invalid`
 dan kelas di luar target tetap ditolak tanpa memandang confidence.
 Checkpoint terpasang saat analisis ini berhasil dimuat oleh loader backend
 dengan 19 nama kelas yang sama dengan folder dataset.
 
 ### Batasan pengamanan dan cara membuktikan OOD
 
-Threshold runtime 90% adalah guardrail, bukan jaminan matematis bahwa setiap foto
+Threshold runtime 70% adalah guardrail, bukan jaminan matematis bahwa setiap foto
 non-daun pasti ditolak. Confusion matrix dan accuracy validation saja tidak
 menjawab pertanyaan “berapa wajah yang lolos sebagai daun?”. Buat OOD test set
 terpisah dari training dan validasi berisi contoh dunia nyata, ukur:
@@ -565,11 +579,11 @@ terpisah dari training dan validasi berisi contoh dunia nyata, ukur:
 - **in-distribution rejection rate:** proporsi foto daun valid yang tertolak;
 - confusion matrix khusus OOD vs daun, termasuk confidence histogram.
 
-Uji juga threshold 50/60/70/80% di validation khusus OOD dan pilih sesuai
-prioritas false acceptance versus false rejection. Untuk kebutuhan lebih kuat,
-pertimbangkan kalibrasi confidence atau detector OOD terpisah dan validasi
-lapangan. Jangan menyebut 98.66% validation accuracy sebagai akurasi OOD
-universal.
+Validasi operating point 70% pada data terpisah yang mewakili input lapangan;
+catat false acceptance dan false rejection sebelum mengubah parameter. Untuk
+kebutuhan lebih kuat, pertimbangkan kalibrasi confidence atau detector OOD
+terpisah dan validasi lapangan. Jangan menyebut 98.66% validation accuracy
+sebagai akurasi OOD universal.
 
 ## 11. Penyimpanan dan keamanan data
 
@@ -623,13 +637,15 @@ python -m backend.train_plant_model --evaluate-only \
 
 ## 13. Penjelasan singkat yang bisa disampaikan ke dosen
 
-> “Foto dari Flutter dikirim ke FastAPI. Backend memakai MobileNetV2 untuk
+> “Foto dari Flutter dikirim ke FastAPI. Backend memakai MobileNetV2 dan bila
+> checkpoint sekunder yang sudah divalidasi tersedia, EfficientNet-B0 untuk
 > memilih penyakit daun dan confidence. Jika kelasnya Background/OOD atau
-> confidence di bawah 90%, API menolak sebelum analisis lanjutan. Untuk hasil
+> confidence di bawah 70%, API menolak sebelum analisis lanjutan. Untuk hasil
 > yang lolos, K-Means mengelompokkan warna Lab lalu HSV memfilter piksel hijau
 > dan kering; persentase mask menjadi input aturan fuzzy Sugeno untuk skor
-> kesehatan. Jika koordinat tersedia, cuaca Open-Meteo atau fallback BMKG dapat
-> menyesuaikan risiko blight. ANN numerik terpisah dan opsional; ia memerlukan
+> kesehatan. Cuaca Open-Meteo atau fallback BMKG diberi bobot risiko berbeda
+> menurut sumbernya. Pohon keputusan memadukan kelas, area segmen, skor, suhu,
+> dan kelembapan menjadi prioritas tindakan. ANN numerik terpisah dan opsional; ia memerlukan
 > CSV fitur berlabel dan checkpoint sendiri. Hasil ditampilkan di Flutter dan
 > disimpan pada Firestore serta storage lokal backend.”
 

@@ -1,18 +1,39 @@
+# Python environments and generated caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv*/
+.venv*
+
+# Editor settings and local-only legacy projects
+.claude-dev-helper/
+.vscode/
+*.iml
+.idea/
+.github/workflows/flutter-web.yml
+/DEPLOYMENT.md
+/app_praktikum_streamlit.py
+/detect_webcam.py
+/detect_webcam_praktikum.py
+/train.py
+mobile/
+
+# Secrets and local logs/databases
 .env
 .env.*
 !.env.example
 *.log
+*.sqlite3
 serviceAccountKey.json
 firebase-admin*.json
 *.pem
-.dart_tool/
-web/build/
-mobile/build/
-outputsApp/monitoring_api.sqlite3
-outputsApp/monitoring_api.csv
+
+# Datasets, model weights, and runtime output
+.DS_Store
 outputsApp/
-outputsApp/masks/
+PlantVillage/
+*.pth
+*.h5
+
+# Flutter build artifacts
+.dart_tool/
+build/

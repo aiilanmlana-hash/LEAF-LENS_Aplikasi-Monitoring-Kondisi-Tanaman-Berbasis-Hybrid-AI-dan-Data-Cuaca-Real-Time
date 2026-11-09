@@ -15,6 +15,13 @@ void main() {
     }
   });
 
+  test('missing backend class label requires verification', () {
+    expect(diagnosisStatusForPrediction(''), (
+      'HASIL AI PERLU DIVERIFIKASI',
+      'Perlu verifikasi',
+    ));
+  });
+
   test('diseased predictions stay diseased even when leaf color is green', () {
     expect(diagnosisStatusForPrediction('Potato___Early_blight'), (
       'TERSERANG PENYAKIT',

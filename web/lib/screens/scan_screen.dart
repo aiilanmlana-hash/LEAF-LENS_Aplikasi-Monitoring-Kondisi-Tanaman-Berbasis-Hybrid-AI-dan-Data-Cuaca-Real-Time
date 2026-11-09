@@ -13,6 +13,7 @@ import '../models/plant_analysis.dart';
 import '../services/image_processing_service.dart';
 import '../services/monitoring_repository.dart';
 import '../services/plant_api_service.dart';
+import '../services/weather_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_surface.dart';
 import '../widgets/garden_artwork.dart';
@@ -47,6 +48,7 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _isCameraLoading = false;
   String? _cameraError;
   String? _analysisError;
+  String? _coordinateNotice;
   int _hueMin = 25;
   int _hueMax = 95;
   int _saturationMin = 35;
@@ -248,6 +250,8 @@ class _ScanScreenState extends State<ScanScreen> {
         (latitudeText.isNotEmpty &&
             (latitude == null ||
                 longitude == null ||
+                !latitude.isFinite ||
+                !longitude.isFinite ||
                 latitude < -90 ||
                 latitude > 90 ||
                 longitude < -180 ||
@@ -268,6 +272,31 @@ class _ScanScreenState extends State<ScanScreen> {
       // network work starts. This avoids a button that appears frozen.
       await Future<void>.delayed(Duration.zero);
       final flipHorizontal = _isCameraImage && _flipHorizontal;
+      if (kIsWeb && mounted) {
+        setState(
+          () => _coordinateNotice =
+              'Meminta izin lokasi browser untuk mengambil data cuaca...',
+        );
+      }
+      final deviceCoordinates = kIsWeb
+          ? await WeatherService.resolveDeviceCoordinates()
+          : null;
+      final resolvedLatitude =
+          latitude ??
+          deviceCoordinates?.latitude ??
+          WeatherService.defaultLatitude;
+      final resolvedLongitude =
+          longitude ??
+          deviceCoordinates?.longitude ??
+          WeatherService.defaultLongitude;
+      if (!mounted) return;
+      setState(() {
+        _coordinateNotice = latitude != null && longitude != null
+            ? 'Menggunakan koordinat yang diisi pada formulir.'
+            : deviceCoordinates != null
+            ? 'Lokasi browser digunakan untuk mengambil cuaca.'
+            : 'Lokasi browser tidak tersedia atau izin ditolak; memakai koordinat default Sidoarjo.';
+      });
 
       // The Python API already performs HSV/K-Means segmentation. Running an
       // additional pixel-by-pixel pass in the browser before every request was
@@ -287,8 +316,8 @@ class _ScanScreenState extends State<ScanScreen> {
           valueMin: _valueMin,
           kernelSize: _kernelSize,
           flipHorizontal: flipHorizontal,
-          latitude: latitude,
-          longitude: longitude,
+          latitude: resolvedLatitude,
+          longitude: resolvedLongitude,
         );
       } on PlantApiException catch (error) {
         if (error.code == 'ood_image') {
@@ -338,10 +367,7 @@ class _ScanScreenState extends State<ScanScreen> {
           (ai?['yellow_ratio'] as num?)?.toDouble() ??
           localSegmentation?.dryRatio ??
           0;
-      final className =
-          ai?['class_name']?.toString() ??
-          ai?['prediction']?.toString() ??
-          'AI tidak tersedia';
+      final className = ai?['class_name']?.toString() ?? '';
       final prediction = ai?['prediction']?.toString() ?? className;
       final plantName = ai?['plant_name']?.toString();
       final diseaseName = ai?['disease_name']?.toString();
@@ -382,6 +408,8 @@ class _ScanScreenState extends State<ScanScreen> {
       final weather = weatherValue is Map
           ? weatherValue
           : const <String, dynamic>{};
+      final riskValue = ai?['risk_analysis'];
+      final risk = riskValue is Map ? riskValue : const <String, dynamic>{};
       final analysis = PlantAnalysis(
         imageBytes: sourceBytes,
         imageIsMirrored: flipHorizontal,
@@ -400,6 +428,7 @@ class _ScanScreenState extends State<ScanScreen> {
         severity: status.$2,
         statusLabel: status.$1,
         carePriority: careMap['priority']?.toString() ?? 'Perlu verifikasi',
+        priorityLevel: risk['priority_level']?.toString(),
         careSummary:
             careMap['summary']?.toString() ??
             'Hasil lokal belum cukup untuk memberikan rekomendasi spesifik.',
@@ -416,6 +445,14 @@ class _ScanScreenState extends State<ScanScreen> {
         weatherSource: weather['source']?.toString(),
         weatherStation: weather['station_name']?.toString(),
         weatherError: ai?['weather_error']?.toString(),
+        healthSeverity:
+            risk['severity']?.toString() ?? ai?['severity']?.toString(),
+        leafRiskScore: (risk['leaf_risk_score'] as num?)?.toDouble(),
+        leafRiskLevel: risk['leaf_risk_level']?.toString(),
+        weatherRiskScore: (risk['weather_risk_score'] as num?)?.toDouble(),
+        weatherRiskLevel: risk['weather_risk_level']?.toString(),
+        weatherSummary: risk['weather_summary']?.toString(),
+        weatherRiskMethod: risk['weather_risk_method']?.toString(),
         boundingBox: localSegmentation?.boundingBox,
         imageWidth: localSegmentation?.imageWidth ?? 1,
         imageHeight: localSegmentation?.imageHeight ?? 1,
@@ -756,7 +793,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
           const SizedBox(height: 6),
           Text(
-            'Koordinat dipakai untuk cuaca saat ini; tanpa koordinat, skor fuzzy memakai data daun saja.',
+            _coordinateNotice ?? 'Saat scan, browser mencoba mengambil lokasi. Jika izin ditolak atau waktu habis, koordinat default Sidoarjo digunakan untuk cuaca.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 18),
@@ -949,6 +986,8 @@ class _ScanScreenState extends State<ScanScreen> {
                 ],
               ),
               const SizedBox(height: 14),
+              _careMetricsDashboard(analysis),
+              const SizedBox(height: 14),
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
@@ -991,24 +1030,6 @@ class _ScanScreenState extends State<ScanScreen> {
                       label: 'ANN belum tersedia',
                       value: analysis.annError!,
                     ),
-                  if (analysis.healthScore != null)
-                    _InfoPill(
-                      label: 'Fuzzy health',
-                      value: '${analysis.healthScore!.toStringAsFixed(1)}%',
-                    ),
-                  if (analysis.temperatureC != null ||
-                      analysis.humidityPct != null)
-                    _InfoPill(
-                      label: 'Cuaca',
-                      value: [
-                        if (analysis.temperatureC != null)
-                          '${analysis.temperatureC!.toStringAsFixed(1)} °C',
-                        if (analysis.humidityPct != null)
-                          'RH ${analysis.humidityPct!.toStringAsFixed(0)}%',
-                        if (analysis.precipitationMm != null)
-                          'Hujan ${analysis.precipitationMm!.toStringAsFixed(1)} mm',
-                      ].join(' · '),
-                    ),
                 ],
               ),
               if (analysis.weatherSource != null) ...[
@@ -1029,82 +1050,22 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
               ],
               const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: PlantPalette.sand.withValues(alpha: 0.48),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: statusColor.withValues(alpha: 0.22),
-                  ),
+              Text(
+                'Rekomendasi Penanganan',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: PlantPalette.forest,
+                  fontWeight: FontWeight.w800,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Prioritas penanganan · ${analysis.carePriority}',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: PlantPalette.forest,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(analysis.careSummary),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Tindakan darurat / prioritas',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    ...analysis.careActions.map(
-                      (action) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Text('• $action'),
-                      ),
-                    ),
-                    if (analysis.organicRecommendations.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Rekomendasi organik / hayati',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                      ...analysis.organicRecommendations.map(
-                        (action) => Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text('• $action'),
-                        ),
-                      ),
-                    ],
-                    if (analysis.chemicalRecommendations.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Opsi kimiawi (verifikasi label lokal)',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                      ...analysis.chemicalRecommendations.map(
-                        (action) => Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text('• $action'),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    Text(
-                      'Dampak jika tidak ditangani',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(analysis.untreatedImpact),
-                    const SizedBox(height: 6),
-                    Text(
-                      analysis.careDisclaimer,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: PlantPalette.sage,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                  ],
-                ),
+              ),
+              const SizedBox(height: 8),
+              Text(analysis.careSummary),
+              const SizedBox(height: 12),
+              _careActionCards(analysis),
+              const SizedBox(height: 12),
+              _CareFooterAlert(
+                title: 'Catatan penggunaan',
+                message:
+                    '${analysis.careDisclaimer} Dampak bila diabaikan: ${analysis.untreatedImpact}',
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
@@ -1118,6 +1079,213 @@ class _ScanScreenState extends State<ScanScreen> {
       ],
     );
   }
+
+  Widget _careMetricsDashboard(PlantAnalysis analysis) {
+    final priority = analysis.priorityLevel ?? analysis.carePriority;
+    final priorityColor = switch (priority) {
+      'Tinggi' || 'Sangat tinggi' => PlantPalette.red,
+      'Sedang' => PlantPalette.orange,
+      'Rendah' || 'Rutin' || 'Pantau' => PlantPalette.forest,
+      _ => PlantPalette.sage,
+    };
+    final weatherRiskScore = analysis.weatherRiskScore;
+    final leafRiskScore =
+        analysis.leafRiskScore ??
+        (analysis.healthScore == null ? null : 100 - analysis.healthScore!);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 960
+            ? 3
+            : constraints.maxWidth >= 620
+            ? 2
+            : 1;
+        final cardWidth = (constraints.maxWidth - (columns - 1) * 10) / columns;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            SizedBox(
+              width: cardWidth,
+              child: _CareMetricCard(
+                title: 'PRIORITAS TINDAKAN',
+                icon: Icons.priority_high_rounded,
+                color: priorityColor,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      priority,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: priorityColor,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Keparahan: ${analysis.healthSeverity ?? analysis.severity}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cardWidth,
+              child: _CareMetricCard(
+                title: 'RISIKO DAUN · FUZZY + CUACA',
+                icon: Icons.cloud_outlined,
+                color: _riskColor(analysis.leafRiskLevel),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            analysis.leafRiskLevel ?? 'Belum tersedia',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(
+                                  color: _riskColor(analysis.leafRiskLevel),
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                        ),
+                        Text(
+                          leafRiskScore == null
+                              ? '—'
+                              : '${leafRiskScore.toStringAsFixed(0)}/100',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 7),
+                    if (leafRiskScore == null)
+                      Container(
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: PlantPalette.sage.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      )
+                    else
+                      LinearProgressIndicator(
+                        value: (leafRiskScore / 100).clamp(0.0, 1.0),
+                        minHeight: 6,
+                        borderRadius: BorderRadius.circular(8),
+                        color: _riskColor(analysis.leafRiskLevel),
+                        backgroundColor: PlantPalette.sage.withValues(
+                          alpha: 0.16,
+                        ),
+                      ),
+                    const SizedBox(height: 7),
+                    Text(
+                      'Fuzzy health ${analysis.healthScore?.toStringAsFixed(1) ?? '—'}% · risiko cuaca ${analysis.weatherRiskLevel ?? 'tidak tersedia'}${weatherRiskScore == null ? '' : ' (${weatherRiskScore.toStringAsFixed(0)}/100)'}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    if (analysis.weatherSummary != null)
+                      Text(
+                        analysis.weatherSummary!,
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: PlantPalette.sage),
+                      ),
+                    if (analysis.weatherRiskMethod != null)
+                      Text(
+                        analysis.weatherRiskMethod!,
+                        style: Theme.of(context).textTheme.labelSmall
+                            ?.copyWith(color: PlantPalette.sage, height: 1.35),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cardWidth,
+              child: _CareMetricCard(
+                title: 'SEGMENTASI DAUN · HSV',
+                icon: Icons.donut_small_outlined,
+                color: PlantPalette.forest,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SegmentProgress(
+                      label: 'Hijau / sehat',
+                      value: analysis.greenRatio,
+                      color: PlantPalette.forest,
+                    ),
+                    const SizedBox(height: 8),
+                    _SegmentProgress(
+                      label: 'Kering / bercak',
+                      value: analysis.dryRatio,
+                      color: PlantPalette.orange,
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      'Indikasi warna, bukan konfirmasi infeksi.',
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: PlantPalette.sage),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _careActionCards(PlantAnalysis analysis) {
+    final cards = [
+      _CareActionCard(
+        title: 'Tindakan darurat',
+        subtitle: 'Langkah awal yang dapat dilakukan sekarang',
+        icon: Icons.health_and_safety_outlined,
+        color: PlantPalette.red,
+        actions: analysis.careActions,
+      ),
+      _CareActionCard(
+        title: 'Pengelolaan organik',
+        subtitle: 'Sanitasi dan praktik budidaya',
+        icon: Icons.eco_outlined,
+        color: PlantPalette.forest,
+        actions: analysis.organicRecommendations,
+      ),
+      _CareActionCard(
+        title: 'Opsi kimiawi',
+        subtitle: 'Hanya setelah verifikasi diagnosis dan label',
+        icon: Icons.science_outlined,
+        color: PlantPalette.orange,
+        actions: analysis.chemicalRecommendations,
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 960
+            ? 3
+            : constraints.maxWidth >= 620
+            ? 2
+            : 1;
+        final cardWidth = (constraints.maxWidth - (columns - 1) * 10) / columns;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: cards
+              .map((card) => SizedBox(width: cardWidth, child: card))
+              .toList(),
+        );
+      },
+    );
+  }
+
+  Color _riskColor(String? level) => switch (level) {
+    'Tinggi' => PlantPalette.red,
+    'Sedang' => PlantPalette.orange,
+    'Rendah' => PlantPalette.forest,
+    _ => PlantPalette.sage,
+  };
 
   Color _statusColor(String severity) => switch (severity) {
     'Sehat' => PlantPalette.forest,
@@ -1323,6 +1491,207 @@ class _SingleParameter extends StatelessWidget {
       ],
     );
   }
+}
+
+class _CareMetricCard extends StatelessWidget {
+  const _CareMetricCard({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.child,
+  });
+
+  final String title;
+  final IconData icon;
+  final Color color;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => GlassSurface(
+    padding: const EdgeInsets.all(14),
+    radius: 18,
+    opacity: 0.86,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                title,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: PlantPalette.sage,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        child,
+      ],
+    ),
+  );
+}
+
+class _SegmentProgress extends StatelessWidget {
+  const _SegmentProgress({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final double value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final boundedValue = value.clamp(0.0, 100.0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+            ),
+            Text(
+              '${value.toStringAsFixed(1)}%',
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        LinearProgressIndicator(
+          value: boundedValue / 100,
+          minHeight: 6,
+          borderRadius: BorderRadius.circular(8),
+          color: color,
+          backgroundColor: color.withValues(alpha: 0.14),
+        ),
+      ],
+    );
+  }
+}
+
+class _CareActionCard extends StatelessWidget {
+  const _CareActionCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.color,
+    required this.actions,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final List<String> actions;
+
+  @override
+  Widget build(BuildContext context) => GlassSurface(
+    padding: const EdgeInsets.all(16),
+    radius: 18,
+    opacity: 0.84,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: PlantPalette.forest,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        for (final action in actions)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 9),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.check_circle_outline, size: 16, color: color),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    action,
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(height: 1.4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+class _CareFooterAlert extends StatelessWidget {
+  const _CareFooterAlert({required this.title, required this.message});
+
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: PlantPalette.orange.withValues(alpha: 0.08),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: PlantPalette.orange.withValues(alpha: 0.28)),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(
+          Icons.info_outline_rounded,
+          color: PlantPalette.orange,
+          size: 19,
+        ),
+        const SizedBox(width: 9),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: PlantPalette.forest,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(message, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _MetricPill extends StatelessWidget {

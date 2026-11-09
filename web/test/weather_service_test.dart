@@ -78,8 +78,8 @@ void main() {
 
   test('falls back to Sidoarjo when location resolution throws', () async {
     final client = MockClient((request) async {
-      expect(request.url.queryParameters['latitude'], '-7.45');
-      expect(request.url.queryParameters['longitude'], '112.72');
+      expect(request.url.queryParameters['latitude'], '-7.4478');
+      expect(request.url.queryParameters['longitude'], '112.7183');
       return http.Response(
         jsonEncode({
           'current': {

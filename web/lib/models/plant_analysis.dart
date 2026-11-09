@@ -19,6 +19,7 @@ class PlantAnalysis {
     required this.severity,
     required this.statusLabel,
     required this.carePriority,
+    this.priorityLevel,
     required this.careSummary,
     required this.careActions,
     required this.careDisclaimer,
@@ -31,6 +32,13 @@ class PlantAnalysis {
     this.weatherSource,
     this.weatherStation,
     this.weatherError,
+    this.healthSeverity,
+    this.leafRiskScore,
+    this.leafRiskLevel,
+    this.weatherRiskScore,
+    this.weatherRiskLevel,
+    this.weatherSummary,
+    this.weatherRiskMethod,
     required this.boundingBox,
     required this.imageWidth,
     required this.imageHeight,
@@ -56,6 +64,7 @@ class PlantAnalysis {
   final String severity;
   final String statusLabel;
   final String carePriority;
+  final String? priorityLevel;
   final String careSummary;
   final List<String> careActions;
   final String careDisclaimer;
@@ -68,6 +77,13 @@ class PlantAnalysis {
   final String? weatherSource;
   final String? weatherStation;
   final String? weatherError;
+  final String? healthSeverity;
+  final double? leafRiskScore;
+  final String? leafRiskLevel;
+  final double? weatherRiskScore;
+  final String? weatherRiskLevel;
+  final String? weatherSummary;
+  final String? weatherRiskMethod;
   final NormalizedBounds? boundingBox;
   final int imageWidth;
   final int imageHeight;

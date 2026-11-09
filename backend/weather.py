@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 _LOGGER = logging.getLogger(__name__)
 _CLIMATE_DIR = Path(__file__).resolve().parent / "climate_data_idn.csv"
 _OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+_CURRENT_WEATHER_RISK_WEIGHT = 1.0
+_HISTORICAL_WEATHER_RISK_WEIGHT = 0.35
 
 
 def _read_number(row: dict[str, str], key: str, minimum: float, maximum: float) -> float | None:
@@ -60,6 +62,8 @@ def _fetch_open_meteo(latitude: float, longitude: float) -> dict[str, Any]:
         "humidity_pct": humidity,
         "precipitation_mm": precipitation,
         "source": "Open-Meteo",
+        "data_quality": "real_time",
+        "risk_weight": _CURRENT_WEATHER_RISK_WEIGHT,
         "station_name": None,
         "observation_date": current.get("time"),
     }
@@ -160,6 +164,8 @@ def _historical_weather(
         "humidity_pct": round(values[1], 1),
         "precipitation_mm": round(values[2], 1),
         "source": "Rata-rata historis BMKG 2010–2020",
+        "data_quality": "historical_fallback",
+        "risk_weight": _HISTORICAL_WEATHER_RISK_WEIGHT,
         "station_name": station_name,
         "observation_date": f"bulan-{month:02d}",
     }

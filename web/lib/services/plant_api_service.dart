@@ -6,6 +6,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 class PlantApiService {
+  static const defaultLatitude = -7.4478;
+  static const defaultLongitude = 112.7183;
+
   PlantApiService({
     http.Client? client,
     String? baseUrl,
@@ -63,10 +66,19 @@ class PlantApiService {
               filename: imageName,
             ),
           );
-    if (latitude != null && longitude != null) {
-      request.fields['latitude'] = '$latitude';
-      request.fields['longitude'] = '$longitude';
-    }
+    final coordinatesAreValid =
+        latitude != null &&
+        longitude != null &&
+        latitude.isFinite &&
+        longitude.isFinite &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180;
+    request.fields['latitude'] =
+        '${coordinatesAreValid ? latitude : defaultLatitude}';
+    request.fields['longitude'] =
+        '${coordinatesAreValid ? longitude : defaultLongitude}';
     if (idToken != null && idToken.isNotEmpty) {
       request.headers['Authorization'] = 'Bearer $idToken';
     }

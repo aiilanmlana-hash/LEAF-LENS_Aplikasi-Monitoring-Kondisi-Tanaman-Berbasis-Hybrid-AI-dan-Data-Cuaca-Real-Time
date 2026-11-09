@@ -3,26 +3,27 @@
 ## Sistem Monitoring Kesehatan Tanaman Jagung, Kentang, dan Tomat Berbasis Hybrid AI
 
 **Tanggal penyusunan:** 6 November 2026  
-**Sumber metrik evaluasi:** `outputsApp/pbl_plantvillage_metrics.json`
+**Sumber metrik evaluasi:** arsip evaluasi lokal `outputsApp/pbl_plantvillage_metrics.json`
+
+Snapshot Git yang dibersihkan hanya melacak source FastAPI, Flutter Web, CI,
+dan dokumentasi. Dataset, checkpoint model, output runtime, serta aplikasi
+mobile terpisah tidak disertakan; angka evaluasi pada laporan merupakan hasil
+arsip sebelumnya dan bukan berkas yang dikemas dalam repository.
 
 ### Abstrak
 
 Penyakit daun pada jagung, kentang, dan tomat dapat menurunkan hasil panen
-apabila gejala terlambat diketahui. Proyek ini mengembangkan aplikasi web untuk
-skrining visual daun dengan menggabungkan Flutter Web, FastAPI, MobileNetV2,
-segmentasi warna K-Means dan HSV, fuzzy Sugeno, data cuaca, serta jalur ANN
-numerik opsional. MobileNetV2 memilih satu dari 19 kelas dan menolak prediksi
-kelas `Background_or_Invalid` atau confidence di bawah 60% pada backend.
-Flutter Web saat ini masih mempunyai guard tambahan 90%, sehingga kedua batas
-belum konsisten. Untuk gambar yang lolos kedua pemeriksaan, segmentasi menghasilkan rasio area hijau dan kering; nilai tersebut
-dipakai fuzzy Sugeno untuk menghitung skor kesehatan dan tingkat keparahan.
-Data cuaca dari Open-Meteo atau fallback klimatologi BMKG dapat menyesuaikan
-risiko penyakit blight. Hasil ditampilkan melalui Flutter Web dan disimpan pada
-riwayat aplikasi. Fine-tuning terbaru menggunakan 29.028 gambar pelatihan dan
-7.014 gambar validasi setelah penghapusan duplikat byte-identik. Checkpoint
-terpilih memperoleh akurasi 98,66% dan macro F1 94,88% pada split validasi.
-ANN numerik belum dilatih karena proyek belum memiliki data observasi numerik
-dengan label ground-truth dan fitur cuaca yang berpasangan.
+apabila gejala terlambat diketahui. Proyek ini mengembangkan aplikasi skrining
+visual berbasis Flutter Web dan FastAPI. Pipeline menggabungkan classifier
+MobileNetV2, opsi ensemble probabilitas dengan EfficientNet-B0 apabila
+checkpoint keduanya tersedia, segmentasi warna K-Means/Lab yang dibatasi oleh
+mask HSV hijau dan kering, fuzzy Sugeno, metadata mutu sumber cuaca, dan pohon
+keputusan deterministik untuk triase tindakan. Backend menolak kelas
+`Background_or_Invalid`, tanaman di luar cakupan, serta confidence classifier
+(consensus jika checkpoint kedua aktif) di bawah 70%. Checkpoint EfficientNet-B0
+belum disertakan dan belum ada hasil evaluasi ensemble; metrik yang dicantumkan
+dalam laporan ini hanya untuk MobileNetV2. Model ANN numerik tetap opsional dan
+belum dilatih karena belum tersedia dataset fitur-cuaca berlabel ground-truth.
 
 **Kata kunci:** klasifikasi penyakit daun, MobileNetV2, K-Means, HSV, fuzzy
 Sugeno, cuaca, Flutter Web, FastAPI.
@@ -49,46 +50,47 @@ label produk, aturan setempat, dan saran penyuluh atau ahli tanaman.
 ```text
 Kamera / unggah foto Flutter Web
     → request multipart asinkron ke FastAPI
-    → decode gambar dan MobileNetV2
-    → guardrail backend: kelas OOD/non-target atau confidence < 60% → HTTP 422
-    → untuk prediksi yang lolos: K-Means Lab + filter HSV
-    → rasio hijau/kering dan mask
-    → Open-Meteo (atau fallback historis BMKG bila koordinat ada)
-    → fuzzy Sugeno untuk skor kesehatan dan severity
-    → ANN numerik hanya bila checkpoint valid dan cuaca tersedia
-    → rekomendasi perawatan, respons API, penyimpanan, dan kartu hasil Flutter
+    → MobileNetV2 + [EfficientNet-B0 bila checkpoint valid] probability average
+    → guardrail OOD: class non-target atau confidence < 70% → HTTP 422
+    → Lab K-Means + HSV green/dry masks → persentase area
+    → cuaca aktual / fallback historis dengan provenance weight
+    → fuzzy Sugeno → health score dan severity
+    → decision tree → prioritas dan tindakan triase
+    → ANN numerik opsional bila checkpoint valid dan cuaca tersedia
+    → penyimpanan dan kartu hasil Glassmorphism Flutter
 ```
 
 Guardrail OOD backend dijalankan sebelum segmentasi, fuzzy, rekomendasi, serta
-penyimpanan riwayat. Guard client Web masih memakai batas confidence 90% setelah
-respons sukses diterima; confidence 60% sampai kurang dari 90% dapat sudah
-diproses dan disimpan backend, tetapi kemudian ditolak oleh Flutter. Endpoint
-analisis FastAPI menjalankan kerja citra berat pada thread
+penyimpanan riwayat. Backend dan frontend menggunakan keputusan yang sama:
+Flutter membaca `class_name` yang diterima dari backend dan tidak membuat
+ambang confidence kedua. Endpoint analisis FastAPI menjalankan kerja citra berat pada thread
 pool agar event loop API tidak menahan request lain. Request jaringan pada
 Flutter menggunakan `async`/`await`; pratinjau gambar memakai batas ukuran
 decode agar tidak perlu merender ulang seluruh gambar resolusi tinggi.
 
-### 2.2 MobileNetV2: klasifikasi dan penyaring OOD
+### 2.2 Ensemble classifier bersyarat dan penyaring OOD
 
-MobileNetV2 adalah classifier utama citra daun. Gambar diubah ke RGB,
-di-resize ke 256 × 256, dinormalisasi dengan mean dan simpangan baku ImageNet,
-lalu diproses menjadi probabilitas untuk 19 kelas.
+MobileNetV2 adalah classifier utama citra daun. Jika checkpoint
+EfficientNet-B0 yang telah dilatih pada kelas yang sama dikonfigurasi, backend
+merata-ratakan probabilitas softmax MobileNetV2 (bobot 0,60) dan
+EfficientNet-B0 (bobot 0,40). Tanpa checkpoint yang sesuai, backend memakai
+MobileNetV2 saja. Checkpoint EfficientNet-B0 tidak tersedia pada versi
+pengajuan ini; karena itu angka evaluasi di bawah bukan metrik ensemble.
+Gambar diubah ke RGB, di-resize ke 256 × 256, dan dinormalisasi dengan mean
+serta simpangan baku ImageNet sebelum klasifikasi.
 
 Kelas keluaran terdiri dari 18 kelas daun (jagung, kentang, tomat) dan satu
 kelas `Background_or_Invalid`. Backend mengembalikan HTTP 422 dengan kode
-`ood_image` bila kelas teratas adalah OOD, tidak termasuk tiga jenis tanaman,
-confidence bukan angka valid, atau confidence kurang dari `0.60` (60%).
+`ood_image` bila kelas consensus adalah OOD, tidak termasuk tiga jenis tanaman,
+confidence bukan angka valid, atau confidence kurang dari `0.70` (70%).
 Confidence yang diteruskan dari classifier backend disimpan sebagai persen;
 validasi membaginya dengan 100 sebelum membandingkan dengan threshold desimal.
 Foto yang ditolak backend tidak diteruskan ke segmentasi/fuzzy dan tidak
 disimpan oleh backend.
 
-`web/lib/services/plant_api_service.dart` masih menetapkan
-`minimumConfidencePercent = 90.0`. Ini pemeriksaan terpisah setelah backend
-mengembalikan HTTP 2xx. Prediksi 60% sampai kurang dari 90% berpotensi tetap
-menjalankan segmentasi, fuzzy, dan penyimpanan backend, lalu dianggap OOD oleh
-client dan tidak ditampilkan sebagai hasil analisis. Confidence softmax bukan
-probabilitas terkalibrasi bahwa prediksi benar.
+Softmax confidence bukan probabilitas terkalibrasi bahwa prediksi benar.
+Penolakan berbasis kelas OOD/non-target tetap berlaku tanpa memandang nilai
+confidence.
 
 ### 2.3 K-Means dan HSV: segmentasi warna
 
@@ -144,21 +146,32 @@ rata-rata berbobot `Σ(bobot × konsekuen) / Σ(bobot)`.
 Nilai akhir dibatasi ke 0–100. Severity `Sehat` diberikan untuk skor ≥75,
 `Perlu perhatian` untuk skor ≥50 dan <75, serta `Kritis` untuk skor <50.
 Apabila kondisi cuaca tersedia dan nama penyakit mengandung “blight”, aturan
-risiko hangat/lembap/hujan dapat mengurangi skor maksimal 15 poin. Penyesuaian
+risiko hangat/lembap/hujan dapat mengurangi skor maksimal 15 poin untuk cuaca
+real-time; pada fallback historis pengurangannya dikalikan bobot 0,35. Penyesuaian
 ini adalah indikator risiko, bukan diagnosis cuaca atau penyakit.
 
 ### 2.5 Data cuaca
 
 `backend/weather.py` meminta data kondisi saat ini dari Open-Meteo Forecast API
-jika latitude dan longitude diberikan. Variabel yang dipakai adalah suhu,
+menggunakan pasangan latitude dan longitude. Pada scan Web, aplikasi meminta
+geolokasi browser; koordinat formulir yang valid diprioritaskan, kemudian lokasi
+perangkat, dan bila izin ditolak atau lookup timeout digunakan koordinat default
+Sidoarjo `(-7.4478, 112.7183)`. `PlantApiService` juga selalu menyertakan
+koordinat valid sebagai pertahanan terakhir. Variabel yang dipakai adalah suhu,
 kelembapan relatif, dan curah hujan. Request memiliki timeout empat detik dan
 memvalidasi rentang nilainya.
 
 Jika Open-Meteo gagal, backend mencari stasiun BMKG terdekat lalu memakai
 rata-rata bulanan dari `backend/climate_data_idn.csv/` (data historis
-2010–2020). Tanpa koordinat, data cuaca tidak tersedia; fuzzy tetap dapat
-menghitung skor dari rasio daun, tetapi penyesuaian cuaca dan inferensi ANN
-tidak berjalan.
+2010–2020). Dengan koordinat valid, backend mencoba sumber real-time lalu
+fallback historis; kegagalan jaringan atau sumber data tetap dapat membuat
+cuaca tidak tersedia. Fuzzy tetap dapat menghitung skor dari rasio daun,
+sedangkan penyesuaian cuaca dan inferensi ANN memerlukan data cuaca. Respons
+menandai cuaca aktual sebagai `real_time` dengan
+`risk_weight=1.0`, sedangkan klimatologi fallback diberi
+`historical_fallback` dengan `risk_weight=0.35`. Bobot ini adalah heuristik
+provenance untuk mengurangi pengaruh sumber historis, bukan probabilitas
+akurasi meteorologis yang telah dikalibrasi.
 
 ### 2.6 ANN numerik
 
@@ -195,12 +208,37 @@ berlabel yang representatif tersedia.
 
 ### 2.7 Rekomendasi penanganan
 
-`backend/care_recommendations.py` menyusun prioritas tindakan berdasarkan
-tanaman, penyakit, confidence, skor kesehatan, kondisi kering, dan cuaca.
-Respons memisahkan tindakan darurat, rekomendasi organik/hayati, opsi
-fungisida/bakterisida kimiawi berdasarkan bahan aktif, serta dampak bila tidak
-ditangani. Informasi tersebut merupakan saran awal yang tetap harus diperiksa
-dengan label produk dan panduan agronomi setempat.
+`backend/care_recommendations.py` memakai pohon keputusan deterministik yang
+menggabungkan `class_name`, rasio area hijau/kering, skor Sugeno, suhu, dan
+kelembapan. Cabang utama memisahkan kebutuhan verifikasi karena mask kecil,
+gejala berat, dugaan virus, hawar dengan cuaca hangat/lembap, dan pemantauan
+umum. Output mencantumkan `decision_tree_node`, prioritas, tindakan darurat,
+rekomendasi organik/hayati, opsi kimia, dan dampak bila tidak ditangani.
+Urutan cabang yang dikodekan adalah: confidence di bawah 70% atau tanaman di
+luar cakupan → verifikasi; green <2% dan dry <3% → foto ulang; skor <40 atau
+dry ≥35% → gejala berat; virus → prioritas virus; hawar dengan suhu ≥22°C dan
+kelembapan ≥85% → risiko cuaca tinggi; hawar/bakteri/tungau, skor <55, atau
+dry ≥20% → prioritas gejala; selain itu → pemantauan. Informasi tersebut
+merupakan saran awal yang tetap harus diperiksa dengan label produk dan panduan
+agronomi setempat.
+
+## Multi-Stage Hybrid Pipeline Validation dan Orisinalitas Alur
+
+Kontribusi implementasi yang dapat ditunjuk pada source adalah pengurutan
+validasi dan transformasi berikut; uraian ini bukan pernyataan bahwa algoritma
+dasar baru atau bahwa syarat hukum kebaruan paten telah terpenuhi.
+
+| Tahap | Implementasi yang dapat diperiksa | Peran |
+|---|---|---|
+| Konsensus klasifikasi | MobileNetV2 dan EfficientNet-B0 opsional, rata-rata probabilitas 0.60/0.40 | Checkpoint kelas sama diperlukan; jika EfficientNet-B0 tidak dikonfigurasi, hanya MobileNetV2 berjalan. |
+| Validasi OOD | Penolakan kelas OOD/non-target dan confidence di bawah 0.70 sebelum proses lanjutan | Menghentikan pipeline dan penyimpanan untuk input yang tidak lolos. |
+| Validasi warna | K-Means Lab dengan dua keluaran HSV terpisah untuk area hijau dan kering | Menghasilkan rasio/mask; bukan identifikasi semantik objek. |
+| Penilaian kesehatan | Sugeno dari rasio area dengan penyesuaian risiko blight berbobot provenance cuaca | Sumber historis memberi bobot risiko lebih rendah dari observasi aktual. |
+| Triase tindakan | Decision tree berbasis kelas, rasio, skor, suhu, dan kelembapan | Menghasilkan label node, prioritas, dan saran yang tetap perlu diverifikasi manusia. |
+
+Metrik yang tersedia hanya mengevaluasi checkpoint MobileNetV2 pada split
+dataset yang tercatat. Belum tersedia hasil ensemble atau validasi lapangan
+mandiri.
 
 ## 3. Spesifikasi Dataset dan Kelas
 
@@ -309,28 +347,19 @@ terakhir.
 Akurasi pada berkas metrik adalah 0,9865982321 atau 98,6598%; angka pada
 tabel dibulatkan menjadi 98,66% hingga dua angka desimal.
 
-Distribusi confidence adalah nilai maksimum softmax di seluruh kelas pada
-split validation, bukan metrik khusus non-daun. Berkas metrik historis mencatat
-threshold 60%. Nilai itu metadata evaluasi saat laporan tersebut dibuat,
-bukan bukti nilai runtime. Saat ini trainer mendefinisikan threshold evaluasi
-90%, backend memakai 60%, dan guard Flutter Web memakai 90%; karena konfigurasi
-berbeda, evaluasi ulang diperlukan untuk laporan baru yang konsisten:
-
-| Rentang confidence | Jumlah | Persentase |
-|---|---:|---:|
-| <60% | 58 | 0,83% |
-| 60%–<80% | 73 | 1,04% |
-| 80%–<90% | 94 | 1,34% |
-| ≥90% | 6.789 | 96,79% |
+Distribusi confidence pada berkas lama adalah statistik deskriptif split
+validation, bukan metrik khusus non-daun. Runtime backend saat ini memakai
+ambang OOD 70%; laporan confidence lama tidak boleh dipakai untuk menyatakan
+performa pada ambang itu tanpa evaluasi ulang.
 
 Tabel riwayat memperlihatkan loss training turun, tetapi macro F1 validation
 tidak meningkat monoton:
 
-| Epoch | Train loss | Validation loss | Accuracy | Macro F1 | Confidence <60% |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 0,13797 | 0,04855 | 98,66% | 94,88% | 58 |
-| 2 | 0,09271 | 0,05530 | 98,45% | 94,36% | 54 |
-| 3 | 0,07436 | 0,04715 | 98,55% | 94,79% | 51 |
+| Epoch | Train loss | Validation loss | Accuracy | Macro F1 |
+|---:|---:|---:|---:|---:|
+| 1 | 0,13797 | 0,04855 | 98,66% | 94,88% |
+| 2 | 0,09271 | 0,05530 | 98,45% | 94,36% |
+| 3 | 0,07436 | 0,04715 | 98,55% | 94,79% |
 
 Hasil per kelas tidak seragam. Sebagai contoh, kelas `Tomato___Unspecified_leaf`
 hanya mempunyai delapan sampel validation dan F1 47,62%; angka ini sangat
@@ -352,15 +381,15 @@ probabilitas prediksi benar sebesar nilai confidence.
 
 | Lokasi/file | Fungsi |
 |---|---|
-| `backend/main.py` | FastAPI routes, autentikasi, pemuatan MobileNetV2, OOD guard, orkestrasi inferensi, penyimpanan SQLite/CSV/mask |
-| `backend/train_plant_model.py` | Filter kelas, augmentasi, fine-tuning, evaluasi dan simpan checkpoint classifier |
+| `backend/main.py` | FastAPI routes, autentikasi, pemuatan MobileNetV2/ensemble EfficientNet opsional, OOD guard, orkestrasi dan penyimpanan |
+| `backend/train_plant_model.py` | Filter kelas, augmentasi, fine-tuning/evaluasi MobileNetV2 atau EfficientNet-B0 dan simpan checkpoint |
 | `backend/prepare_dataset.py` | Dry-run atau penerapan pemindahan dan penyaringan kelas dataset |
 | `backend/segmentation.py` | K-Means Lab, filter HSV, morfologi, rasio warna, fitur HSV numerik |
 | `backend/fuzzy_logic.py` | Membership, aturan Sugeno, skor kesehatan dan severity |
 | `backend/weather.py` | Open-Meteo dan fallback rata-rata bulanan BMKG |
 | `backend/numeric_ann.py` | Implementasi ANN NumPy, normalisasi, training/inference API, serialisasi checkpoint |
 | `backend/train_numeric_ann.py` | Pelatihan ANN dari CSV berlabel dan laporan validasi |
-| `backend/care_recommendations.py` | Prioritas, rekomendasi organik/kimiawi dan dampak penyakit |
+| `backend/care_recommendations.py` | Decision tree triase, tindakan darurat, rekomendasi dan dampak |
 | `backend/auth.py`, `backend/compact_context.py` | Verifikasi Firebase dan payload hasil ringkas deterministik |
 | `backend/tests/test_logic.py` | Unit test logika, model, fuzzy, cuaca, OOD, dataset, ANN |
 | `web/lib/main.dart` | Inisialisasi Firebase, route autentikasi dan shell aplikasi |
@@ -368,7 +397,7 @@ probabilitas prediksi benar sebesar nilai confidence.
 | `web/lib/screens/dashboard_screen.dart` | Ringkasan, stream riwayat, widget cuaca dan rekomendasi penyiraman |
 | `web/lib/screens/scan_screen.dart` | Kamera/upload, request async, warning card OOD, kartu hasil |
 | `web/lib/screens/history_screen.dart` | Daftar, ekspor dan penghapusan riwayat pengguna |
-| `web/lib/services/plant_api_service.dart` | Multipart request Bearer ke FastAPI dan safeguard client confidence 90% |
+| `web/lib/services/plant_api_service.dart` | Multipart request ke FastAPI dan parsing hasil/error; status diagnosis menggunakan `class_name` dari backend. |
 | `web/lib/services/image_processing_service.dart` | HSV lokal untuk fallback dan thumbnail; bukan implementasi K-Means |
 | `web/lib/services/monitoring_repository.dart` | Penyimpanan dan riwayat Firestore yang terkait pengguna |
 | `web/lib/services/weather_service.dart` | Geolokasi, Open-Meteo, fallback Sidoarjo dan keputusan penyiraman |
@@ -377,16 +406,15 @@ probabilitas prediksi benar sebesar nilai confidence.
 | `web/lib/theme/app_theme.dart` | Color tokens, typography fallback, component themes |
 | `web/test/` | Widget, service, API guard, dashboard responsive tests |
 | `web/assets/` | Aset visual aktif dan `models/mr_potato_head.glb`; file tak terpakai sudah dihapus |
-| `PlantVillage/train/`, `PlantVillage/val/` | Dataset sumber kebenaran untuk 19 kelas model gambar |
-| `outputsApp/pbl_plantvillage_metrics.json` | Hasil evaluasi dan riwayat training |
-| `outputsApp/monitoring_api.sqlite3`, `monitoring_api.csv`, `masks/` | Riwayat dan mask hasil backend |
+| `PlantVillage/train/`, `PlantVillage/val/` | Dataset lokal yang diperlukan untuk training/evaluasi; tidak dilacak Git |
+| `outputsApp/pbl_plantvillage_metrics.json` | Arsip hasil evaluasi lokal; tidak dilacak Git |
+| `outputsApp/monitoring_api.sqlite3`, `monitoring_api.csv`, `masks/` | Riwayat/mask runtime lokal; tidak dilacak Git |
 
 `web/` juga perlu menyimpan `pubspec.yaml`, lockfile, Firebase options/rules,
 konfigurasi build dan aset; file konfigurasi itu tidak dipindahkan karena
-diperlukan untuk menjalankan aplikasi. Repository juga memiliki `mobile/` dan
-skrip eksperimen lama yang terpisah dari jalur utama Flutter Web + FastAPI.
-Folder tersebut tidak dihapus atau digabung tanpa pemeriksaan penggunaan dan
-riwayat yang lebih lengkap.
+diperlukan untuk menjalankan aplikasi. Dataset, checkpoint, output lokal, aplikasi mobile terpisah, dan skrip
+eksperimen tidak disertakan dalam snapshot Git yang dibersihkan. Source
+Flutter Web dan FastAPI tetap menjadi jalur implementasi utama.
 
 ### Input dan output utama
 
@@ -521,13 +549,10 @@ Project_Klasifikasi_Daun/
 │   ├── pubspec.yaml / pubspec.lock
 │   ├── firebase.json / firestore.rules / firestore.indexes.json
 │   └── analysis_options.yaml
-├── mobile/                     # aplikasi Flutter mobile terpisah
-├── PlantVillage/{train,val}/   # dataset classifier; tidak dibersihkan oleh cleanup mask
-├── outputsApp/                 # output runtime/lokal; diabaikan Git
 ├── .gitignore
-├── DEPLOYMENT.md
 ├── README.md / ANALISIS_PROJECT.md / LAPORAN_PBL.md
-└── checkpoint .pth dan skrip eksperimen lama di root
+├── LEGAL_ATTRIBUTION.md / HKI_SUBMISSION_GUIDE.md
+└── backend/ + web/             # source aplikasi yang dilacak
 ```
 
 ### 8.2 Peta file menurut Single Responsibility
@@ -542,7 +567,7 @@ Project_Klasifikasi_Daun/
 | `web/lib/screens/history_screen.dart` | Stateful UI | Pencarian, ekspor, dan penghapusan record; akses data tetap melalui repository milik akun aktif. |
 | `web/lib/models/plant_analysis.dart` | Data model | Struktur immutable `PlantAnalysis`, normalized bounds, dan segmentation result agar UI tidak mengoperasikan map bebas untuk hasil analisis. |
 | `web/lib/services/image_processing_service.dart` | Service komputasi lokal | Koreksi mirror, mask HSV lokal, morfologi, thumbnail, dan parsing mask. Fallback ini bukan classifier dan bukan K-Means. |
-| `web/lib/services/plant_api_service.dart` | Service HTTP | Mengambil Firebase ID token, menyusun multipart dengan bearer header, timeout, parsing error, serta pemeriksaan client confidence 90% dan kelas target. |
+| `web/lib/services/plant_api_service.dart` | Service HTTP | Mengambil Firebase ID token, menyusun multipart dengan bearer header, timeout, dan parsing error API. |
 | `web/lib/services/monitoring_repository.dart` | Data/repository service | Query dan tulis `monitoring_records`; query selalu difilter `user_id`, mask dibatasi, delete mengecek pemilik, HTTP client tidak terlibat di sini. |
 | `web/lib/services/weather_service.dart` | Service geolokasi/cuaca/domain logic | Izin Geolocator, timeout/fallback Sidoarjo, fetch Open-Meteo, validasi data, aturan penyiraman yang dapat dites terpisah. |
 | `web/lib/theme/app_theme.dart` | Design tokens | Palet, kontras, typography stack lintas OS, komponen Material dan ukuran tema. |
@@ -568,11 +593,12 @@ Project_Klasifikasi_Daun/
 | `backend/climate_data_idn.csv/` | Data source fallback | Data bulanan stasiun iklim untuk fallback, bukan API key atau data pengguna. |
 | `web/firestore.rules` | Security rules | Membatasi akses record ke pemilik terverifikasi, memvalidasi skema dan melarang update record. |
 | `.gitignore` | Repository hygiene | Mengabaikan cache/build, credential, dan seluruh `outputsApp/` runtime. |
-| `DEPLOYMENT.md` | Runbook | Build Web, Firebase, Hostinger static hosting, API backend, HTTPS/CORS, secrets, cache, dan rollback. |
+| `web/README.md` | Tutorial run lokal, konfigurasi API/Firebase, serta panduan operasional Web dan backend. |
 
-`mobile/` adalah target Flutter lain, bukan import runtime dari `web/lib`. File
-eksperimen Python di root (`train.py`, `detect_webcam*.py`, Streamlit) juga
-terpisah dari `backend/main.py` yang melayani aplikasi Web.
+Dataset PlantVillage, file model, `outputsApp/`, dan artefak eksperimen lama
+diabaikan Git. Laporan ini dapat menyebut artefak lokal untuk menjelaskan
+metode pelatihan atau hasil terdahulu, tetapi artefak tersebut tidak termasuk
+snapshot source yang diserahkan.
 
 ## 9. Peta Relasi dan Dependency Call Graph
 
@@ -599,15 +625,16 @@ flowchart TD
   Api --> Token[Firebase currentUser.getIdToken]
   Api --> FastAPI[POST /api/v1/analyze-plant]
   FastAPI --> Verify[backend/auth.py: verify Firebase bearer]
-  Verify --> Guard[MobileNetV2 + backend 60% / OOD guard]
+  Verify --> Ensemble[MobileNetV2 + EfficientNet-B0 opsional]
+  Ensemble --> Guard[Consensus class + OOD threshold 70%]
   Guard --> Seg[segmentation.py: Lab K-Means + HSV]
-  Seg --> Fuzzy[fuzzy_logic.py: Sugeno]
+  Seg --> Weather[Cuaca aktual / historis + provenance weight]
+  Weather --> Fuzzy[fuzzy_logic.py: Sugeno]
   Fuzzy --> ANN[numeric_ann.py optional]
-  ANN --> Care[care_recommendations.py]
+  ANN --> Care[care_recommendations.py: decision tree]
   Care --> LocalDB[SQLite / CSV / mask PNG]
   FastAPI --> Result[JSON + base64 mask]
-  Result --> ClientGuard[Flutter Web client guard 90%]
-  ClientGuard --> Scan
+  Result --> Scan
   Scan --> RepoSave[MonitoringRepository.saveAnalysis]
   RepoSave --> Firestore
 ```
@@ -618,12 +645,12 @@ flowchart TD
 |---|---|---|
 | Firebase initialize/Auth | Gate tidak membuka dashboard tanpa sesi yang valid | Startup failure ditampilkan; email/password atau Google memberi error khusus. Provider/domain Google harus diaktifkan di Firebase Console. |
 | Firestore stream | Ringkasan/pengamatan terbaru tidak terbarui | Dashboard menampilkan error notice; layar scan tetap terpisah. Query dibatasi ke UID aktif. |
-| Izin/lokasi perangkat | Koordinat tak dapat diperoleh | Weather service memakai Sidoarjo; UI menandai bahwa itu lokasi default. |
-| Open-Meteo/network | Cuaca real-time tak tersedia | Kartu tidak crash dan memberi rekomendasi penyiraman standar dengan status cuaca unavailable. Backend analisis dapat memakai fallback BMKG bila koordinat ada. |
+| Izin/lokasi perangkat | Koordinat tak dapat diperoleh | Scan memakai koordinat default Sidoarjo `(-7.4478, 112.7183)` dan UI menandai fallback; API tetap mengirim pasangan koordinat. |
+| Open-Meteo/network | Cuaca real-time tak tersedia | Backend mencoba klimatologi BMKG dengan koordinat yang dikirim. Jika kedua sumber gagal, UI tetap aman dan menandai cuaca unavailable. |
 | Kamera/browser permission | Preview camera gagal | Pesan kamera tampil dan upload gambar tetap dapat digunakan. |
 | API/backend/model | Scan tidak mendapat klasifikasi | HSV lokal hanya menjadi preview; tidak boleh dipromosikan menjadi diagnosis. Koneksi gagal menandai AI unavailable. |
-| Kelas non-target/OOD atau confidence <60% | Backend memberi HTTP 422 `ood_image` | Kartu warning ditampilkan; backend berhenti sebelum segmentasi/fuzzy dan tidak menyimpan record analisis. |
-| Confidence 60% sampai <90% | Backend dapat sukses, tetapi guard Flutter menolak payload | UI menampilkan warning; backend mungkin sudah menghitung dan menyimpan record sebelum client menolak payload. |
+| Kelas non-target/OOD atau confidence <70% | Backend memberi HTTP 422 `ood_image` | Kartu warning ditampilkan; backend berhenti sebelum segmentasi/fuzzy dan tidak menyimpan record analisis. |
+| `class_name` tidak ada pada respons sukses | UI tidak menyimpulkan diagnosis dari teks `prediction` | Badge beralih ke “Perlu verifikasi”; backend tetap menjadi sumber label diagnosis. |
 | Checkpoint ANN opsional | Tidak ada prediksi ANN | ANN ditandai tidak tersedia; MobileNet/Fuzzy tetap dapat berjalan sesuai hasil backend. |
 | Firestore save | Hasil sudah tampil tetapi gagal tersimpan | UI mempertahankan hasil dan menampilkan kegagalan persistensi. |
 
@@ -661,38 +688,33 @@ source saja tidak dapat mengaktifkan OAuth pada project Firebase.
    disimpan sebagai thumbnail base64 di Firestore; foto mentah tidak dimasukkan
    oleh `MonitoringRepository.saveAnalysis()`.
 
-### 10.3 MobileNetV2 dan OOD safeguard
+### 10.3 Ensemble klasifikasi dan OOD safeguard
 
 ```text
 Uint8List → multipart JPEG/PNG/WebP → PIL decode/validasi ukuran
-          → RGB 256×256 + ImageNet normalization → logits → Softmax
-          → class argmax + confidence persen
-          → backend: kelas target + confidence/100 ≥ 0.60 ? lanjut : HTTP 422
-          → client Web: confidence ≥ 90% ? tampilkan hasil : warning lokal
+          → RGB 256×256 + ImageNet normalization
+          → MobileNetV2 + [EfficientNet-B0 jika checkpoint tersedia]
+          → softmax probability average 0.60 / 0.40 → class consensus
+          → backend: kelas target + confidence/100 ≥ 0.70 ? lanjut : HTTP 422
+          → Flutter: status badge dari class_name backend
 ```
-
-Backend adalah pemeriksaan pertama, tetapi ambangnya saat ini 60%; pemeriksaan
-client Web adalah pemeriksaan kedua dengan ambang 90%. Kedua ambang tersebut
-belum sinkron. Untuk confidence antara 60% dan 90%, client dapat menolak payload
-yang sudah diproses backend, termasuk setelah backend menyimpan record.
 
 ```python
 if prediction == OOD_CLASS_NAME or not is_supported_crop(prediction):
     reject(code="ood_image", message=NON_PLANT_MESSAGE)
-elif not isfinite(confidence) or confidence / 100 < 0.60:
+elif not isfinite(confidence) or confidence / 100 < 0.70:
     reject(code="ood_image", message=LOW_CONFIDENCE_MESSAGE)
 else:
     continue_to_segmentation()
 ```
 
 Backend rejection berhenti sebelum segmentation, Fuzzy Sugeno, recommendation,
-dan penyimpanan. Penolakan tambahan di Flutter terjadi setelah respons API,
-jadi tidak membatalkan pekerjaan atau penyimpanan yang sudah dilakukan server.
-Pesan backend dibuat dari threshold `0.60` menjadi “Keyakinan < 60%”; pesan
-Flutter masih hardcoded 90%. Flutter menampilkan warning card:
+dan penyimpanan. Flutter menggunakan `class_name` dari respons backend secara
+ketat. Jika key tersebut tidak tersedia, UI menampilkan status “Perlu
+verifikasi”, bukan menebak dari teks `prediction`. Flutter menampilkan warning
+card untuk respons HTTP 422:
 
-> Backend: Objek tidak terverifikasi sebagai daun tanaman hidup (Keyakinan < 60%).
-> Flutter Web: pesan confidence masih menyebut 90%.
+> Objek tidak terverifikasi sebagai daun tanaman hidup.
 > Pastikan daun tanaman asli berada di dalam bingkai dengan pencahayaan terang.
 
 Kelas `Background_or_Invalid` tetap ditolak meskipun confidence tinggi. Ambang
@@ -729,12 +751,15 @@ JSON; frontend memetakan nilai ke `PlantAnalysis`.
 
 ### 10.6 Geolokasi dan cuaca
 
-Dashboard meminta izin Geolocator ketika kartu cuaca dibuat, mengambil posisi
-dengan timeout, lalu memanggil Open-Meteo `v1/forecast` untuk
+Dashboard meminta izin Geolocator ketika kartu cuaca dibuat. Saat scan Web,
+`ScanScreen` kembali mencoba lokasi pada aksi analisis; bila gagal memakai
+koordinat manual atau default Sidoarjo `(-7.4478, 112.7183)`. API scan selalu
+mengirim latitude dan longitude valid. Service cuaca mengambil posisi dengan
+timeout, lalu memanggil Open-Meteo `v1/forecast` untuk
 `temperature_2m`, `relative_humidity_2m`, `precipitation`, dan `rain`. Input
 adalah latitude/longitude decimal; output adalah `CurrentWeather` beserta
 penanda `usedFallback` dan lokasi untuk UI. Jika izin ditolak, servis mati,
-timeout, atau exception terjadi, koordinat Sidoarjo `(-7.45, 112.72)` dipakai.
+atau timeout, koordinat default Sidoarjo dipakai.
 
 Keputusan penyiraman: hujan >0, presipitasi >0,5 mm atau RH >80% menunda
 penyiraman; suhu >30 °C, RH <50%, dan presipitasi tepat 0 menganjurkan tambahan
@@ -811,7 +836,7 @@ dan build bukan benchmark FPS; 60 FPS harus diukur pada perangkat/browser nyata.
 | `backend/tests/test_logic.py` | Regresi backend | input sintetis/mock → assertion | Unit/integration testing, OOD/auth/fuzzy |
 | `web/firestore.rules` | Batas keamanan data | auth UID + write map → allow/deny | Spatial isolation boundary, least privilege |
 | `.gitignore` | Hygiene repository | path outputs/cache/secret → dikecualikan Git | Artifact hygiene, secret exclusion |
-| `DEPLOYMENT.md` | Runbook Hostinger/API | source + build + secrets → deployment checklist | Static hosting, HTTPS, CORS, rollback |
+| `web/README.md` | Panduan operasional Web/API | source + konfigurasi → run lokal | API URL, Firebase, permission browser |
 
 ## Lampiran A. Detail File Aset, Test, dan Konfigurasi
 
@@ -840,7 +865,7 @@ dan build bukan benchmark FPS; 60 FPS harus diukur pada perangkat/browser nyata.
 | `web/test/auth_screen_test.dart` | Widget test | Breakpoint auth, label Google login/daftar, reduced motion. |
 | `web/test/history_screen_test.dart` | Widget test | Interaksi history dan state pengguna. |
 | `web/test/image_processing_service_test.dart` | Unit test | HSV/morfologi, rasio mask dan normalized bounds. |
-| `web/test/plant_api_service_test.dart` | Service test | Multipart/token, status OOD, confidence 90% pada guard client dan kelas tidak didukung. |
+| `web/test/plant_api_service_test.dart` | Service test | Multipart/token dan parsing respons OOD/non-target API. |
 | `web/test/weather_service_test.dart` | Unit/widget test | Open-Meteo, resolver/fallback, rule penyiraman, dashboard lintas ukuran. |
 | `web/test/widget_test.dart` | Smoke test | Bootstrap app Web dengan home yang dapat diinjeksi. |
 | `web/pubspec.yaml` | Build/dependency config | SDK, dependency dan deklarasi asset target Web. |
@@ -859,8 +884,7 @@ dan build bukan benchmark FPS; 60 FPS harus diukur pada perangkat/browser nyata.
 ## Lampiran B. Panduan Belajar Tim: Dataset, Algoritma, UI, dan File
 
 Lampiran ini menjelaskan jalur aplikasi Web utama (`web/` + `backend/`).
-`mobile/` dan skrip Python di root adalah jalur aplikasi/eksperimen terpisah,
-bukan modul yang otomatis dipanggil oleh Web.
+Lampiran ini hanya menjelaskan jalur aplikasi Web utama (`web/` + `backend/`).
 
 ### B.1 Dari Kaggle sampai folder dataset
 
@@ -935,10 +959,15 @@ Alur pengunduhan yang dapat diulang:
 
 ### B.2 Apa yang terjadi saat tombol analisis ditekan
 
-1. **Mengambil foto.** `ScanScreen` memakai kamera browser atau pemilih foto.
-   Foto menjadi `Uint8List`; ID tanaman, lokasi, koordinat opsional, parameter
-   HSV, dan flag koreksi kamera depan disiapkan.
-2. **Memanggil API.** `PlantApiService.classify()` mengambil Firebase ID token,
+1. **Mengambil foto dan lokasi.** `ScanScreen` memakai kamera browser atau
+   pemilih foto. Foto menjadi `Uint8List`; pada Flutter Web, aksi scan meminta
+   geolokasi browser dengan batas waktu. Koordinat manual didahulukan, lokasi
+   perangkat digunakan bila tersedia, dan fallback Sidoarjo
+   `(-7.4478, 112.7183)` dipakai jika lokasi gagal. ID tanaman, lokasi,
+   parameter HSV, dan flag koreksi kamera depan disiapkan.
+2. **Memanggil API.** `PlantApiService.classify()` memastikan latitude dan
+   longitude valid (memasang koordinat default bila kosong/tidak valid), lalu
+   mengambil Firebase ID token,
    membentuk `http.MultipartRequest`, lalu mengirim field `image` dan metadata
    ke `POST /api/v1/analyze-plant`. Pada konfigurasi lokal, alamat API
    ditentukan oleh `--dart-define=PLANT_API_URL=http://localhost:8000`.
@@ -950,23 +979,23 @@ Alur pengunduhan yang dapat diulang:
    mengembalikan array BGR OpenCV; bila foto berasal dari kamera depan,
    backend melakukan flip horizontal sebelum prediksi.
 5. **Klasifikasi.** Gambar BGR dikonversi kembali ke RGB, di-resize menjadi
-   256 × 256, diubah menjadi tensor, dinormalisasi dengan mean
-   `[0.485, 0.456, 0.406]` dan standar deviasi `[0.229, 0.224, 0.225]`.
-   MobileNetV2 menghasilkan logits, `softmax` mengubahnya menjadi skor
-   antarkelas, lalu `argmax` memilih kelas dan skor tertingginya menjadi
-   confidence.
+   256 × 256, diubah menjadi tensor, dan dinormalisasi dengan statistik
+   ImageNet. MobileNetV2 menghasilkan logits; bila EfficientNet-B0 yang
+   terlatih tersedia, probabilitas softmax kedua model dirata-ratakan dengan
+   bobot 0.60 dan 0.40.
 6. **OOD backend.** Backend menolak kelas `Background_or_Invalid`, kelas yang
    tidak termasuk jagung/kentang/tomat, confidence tidak finite, atau
-   confidence kurang dari 60%. Bila ditolak, backend mengirim HTTP 422 dan
+   confidence kurang dari 70%. Bila ditolak, backend mengirim HTTP 422 dan
    tidak melanjutkan hasil itu ke segmentasi/fuzzy/penyimpanan.
 7. **Segmentasi warna.** Hanya prediksi yang lolos guard backend yang masuk
    `segment_leaf()`. HSV/K-Means bukan filter OOD di implementasi ini; modul
    itu mengukur rasio warna untuk analisis lanjutan.
 8. **Skor dan konteks.** Fuzzy Sugeno memakai rasio hijau/kering dan, jika
-   tersedia, cuaca untuk menghasilkan health score/severity. Backend dapat
-   meminta cuaca Open-Meteo dan menggunakan data klimatologi BMKG sebagai
-   fallback. ANN numerik hanya dijalankan bila checkpoint yang valid dan data
-   cuaca tersedia.
+   tersedia, cuaca untuk menghasilkan health score/severity. Observasi
+   Open-Meteo dan fallback klimatologi BMKG diberi bobot risiko berbeda.
+   Decision tree menggabungkan kelas, rasio, score, suhu, dan kelembapan untuk
+   menyusun triase. ANN numerik hanya dijalankan bila checkpoint yang valid dan
+   data cuaca tersedia.
 9. **Rekomendasi dan penyimpanan backend.** `care_recommendations.py` menyusun
    saran. Backend menyimpan record lokal ke SQLite/CSV dan mask PNG, lalu
    membentuk JSON respons yang memuat hasil serta mask Base64.
@@ -979,23 +1008,12 @@ Alur pengunduhan yang dapat diulang:
     backend. Backend history berada di komputer/server API; Firestore adalah
     riwayat milik akun Web.
 
-**Perbedaan threshold aktual yang penting untuk debugging:** backend memakai
-`OOD_CONFIDENCE_THRESHOLD = 0.60`, sedangkan confidence classifier diubah ke
-skala persen sebelum dimasukkan ke validasi; kodenya membandingkan
-`confidence / 100 < 0.60`. Jadi ambang server adalah 60%. Di sisi lain,
-`PlantApiService` Flutter Web masih menolak hasil di bawah
-`minimumConfidencePercent = 90.0`. Maka confidence 60% hingga kurang dari 90%
-dapat lolos model/backend, diproses, dan disimpan server, tetapi ditolak
-Flutter sesudah menerima respons sukses. Teks warning Flutter masih menyebut
-90%, sedangkan pesan backend dinamis menyebut 60%. Selain itu
-`backend/train_plant_model.py` memakai `CONFIDENCE_THRESHOLD = 0.90` untuk
-bucket laporan evaluasi; nilai itu bukan threshold inference FastAPI. Untuk
-perilaku konsisten, ketiga nilai tersebut harus diselaraskan sebagai pekerjaan
-perubahan kode tersendiri. Tes
-`backend/tests/test_logic.py::test_supported_crop_prediction_at_threshold_is_accepted`
-juga masih mengharapkan backend menolak confidence 89.99%; ekspektasi itu tidak
-sesuai dengan threshold backend 60% sekarang, sehingga tes terkait perlu
-diselaraskan bila threshold baru memang diinginkan.
+**Parameter OOD yang berlaku:** kode backend dan trainer memakai
+`OOD_CONFIDENCE_THRESHOLD = 0.70`; threshold mengacu pada confidence Softmax
+consensus yang dinyatakan sebagai persentase. Flutter tidak mempunyai guard
+confidence kedua dan menetapkan status diagnosis hanya dari `class_name` yang
+dikirim backend. Kelas OOD dan tanaman non-target tetap ditolak tanpa
+memandang confidence.
 
 ### B.3 Algoritma dengan bahasa sederhana
 
@@ -1049,7 +1067,7 @@ dataset numeric berlabel.
 `->` menyatakan tipe hasil; `:` membuka blok berindentasi.
 
 ```python
-OOD_CONFIDENCE_THRESHOLD = 0.60
+OOD_CONFIDENCE_THRESHOLD = 0.70
 
 def validate(confidence: float) -> bool:
     return confidence / 100 >= OOD_CONFIDENCE_THRESHOLD
@@ -1104,19 +1122,12 @@ bukan source algoritma model.
 | `README.md` | Ringkasan arsitektur, cara menjalankan, dataset, model, dan deployment. |
 | `ANALISIS_PROJECT.md` | Catatan analisis/desain project; dokumen referensi, tidak dipanggil saat runtime. |
 | `LAPORAN_PBL.md` | Laporan PBL dan penjelasan pipeline; dokumen ini. |
-| `DEPLOYMENT.md` | Runbook build/deploy Flutter Web dan FastAPI; tidak memproses request aplikasi. |
 | `.gitignore` | Mencegah cache, build, environment lokal, output, dan credential masuk Git. |
-| `.github/workflows/flutter-web.yml` | Workflow CI Flutter Web pada GitHub Actions. |
-| `.github/workflows/flutter-web-folder.yml` | Workflow CI/build yang ditujukan untuk project Flutter di subfolder. |
+| `.github/workflows/flutter-web-folder.yml` | Workflow CI dan build release Flutter Web. |
 | `web/.firebaserc` | Alias project Firebase yang dipakai oleh Firebase CLI untuk Web. |
-| `.venv-api/` | Python virtual environment lokal; berisi interpreter/paket, bukan source untuk diedit atau disalin ke server. |
-| `.DS_Store` | Metadata tampilan folder macOS; bukan bagian aplikasi. |
-| `model_daun.pth` | Checkpoint MobileNetV2 generasi eksperimen lama; jangan disamakan otomatis dengan checkpoint OOD 19 kelas. |
-| `model_daun_plantvillage_full_train.pth` | Checkpoint lama di root. Loader backend memilih checkpoint di `backend/` terlebih dahulu; root adalah fallback lama jika file utama tidak ditemukan. |
-| `train.py` | Trainer/eksperimen awal dengan ukuran/struktur data lama; bukan trainer utama yang dipakai untuk checkpoint aktif. |
-| `detect_webcam.py` | Eksperimen klasifikasi webcam OpenCV langsung, terpisah dari API dan Flutter. |
-| `detect_webcam_praktikum.py` | Eksperimen webcam, segmentasi/hasil dan CSV lokal. |
-| `app_praktikum_streamlit.py` | Aplikasi Streamlit eksperimen mandiri; jalurnya berbeda dari Flutter Web + FastAPI. |
+| `PlantVillage/`, `*.pth`, `*.h5`, `outputsApp/` | Data training, checkpoint, dan output lokal yang sengaja tidak dilacak Git. |
+| `.venv*`, `.DS_Store`, `.dart_tool/`, `build/` | Environment, metadata OS/IDE, atau hasil build lokal yang tidak dilacak. |
+| `mobile/`, skrip eksperimen root, dataset, checkpoint, `outputsApp/` | Artefak legacy atau lokal yang sengaja tidak disertakan dalam repository bersih. |
 
 #### Backend Python
 
@@ -1135,7 +1146,7 @@ bukan source algoritma model.
 | `backend/compact_context.py` | Membuat ringkasan konteks JSON dari hasil analisis. |
 | `backend/requirements.txt` | Daftar dependency Python (FastAPI/Uvicorn, OpenCV, Pillow, PyTorch, Firebase Admin, dan lainnya). |
 | `backend/tests/test_logic.py` | Tes unit/integrasi backend: guard, logika fuzzy, API, cuaca, dataset, dan ANN. |
-| `backend/model_daun_plantvillage_full_train.pth` | Bobot model utama yang dimuat backend; metadata checkpoint mengikat indeks output ke daftar kelas. |
+| `backend/model_daun_plantvillage_full_train.pth` | Lokasi checkpoint lokal yang diharapkan; bobot tidak dilacak Git, dan metadata checkpoint mengikat indeks output ke daftar kelas. |
 | `backend/climate_data_idn.csv/climate_data.csv` | Observasi klimatologi yang dipakai sebagai fallback cuaca. |
 | `backend/climate_data_idn.csv/station_detail.csv` | Nama/koordinat/id stasiun untuk mencari stasiun terdekat. |
 | `backend/climate_data_idn.csv/province_detail.csv` | Metadata provinsi/wilayah dataset klimatologi. |
@@ -1150,7 +1161,7 @@ bukan source algoritma model.
 | `web/lib/screens/dashboard_screen.dart` | Ringkasan/dashboard, data history realtime, cuaca dan navigasi ke scan. |
 | `web/lib/screens/scan_screen.dart` | Kamera/upload, validasi form, memanggil API, membentuk `PlantAnalysis`, menampilkan warning/hasil, lalu meminta repository menyimpan history. |
 | `web/lib/screens/history_screen.dart` | Mencari, melihat, mengekspor dan menghapus history pengguna. |
-| `web/lib/services/plant_api_service.dart` | Mengirim request multipart ke FastAPI, token, decode response/error dan pemeriksaan confidence/kategori pada client. |
+| `web/lib/services/plant_api_service.dart` | Multipart request ke FastAPI dan parsing hasil/error; status diagnosis menggunakan `class_name` dari backend. |
 | `web/lib/services/image_processing_service.dart` | Segmentasi HSV lokal dan helper thumbnail/mask untuk fallback; tidak menjalankan MobileNet atau K-Means. |
 | `web/lib/services/monitoring_repository.dart` | Membaca/menyimpan/menghapus record Firestore milik UID yang login. |
 | `web/lib/services/weather_service.dart` | Geolokasi, HTTP cuaca, fallback dan aturan penyiraman di dashboard. |
@@ -1164,7 +1175,7 @@ bukan source algoritma model.
 | `web/test/auth_screen_test.dart` | Tes widget layar login. |
 | `web/test/history_screen_test.dart` | Tes widget layar history. |
 | `web/test/image_processing_service_test.dart` | Tes helper segmentasi lokal. |
-| `web/test/plant_api_service_test.dart` | Tes request API dan guard client; saat ini mengharapkan batas confidence 90%. |
+| `web/test/plant_api_service_test.dart` | Tes request API dan parsing error OOD/non-target. |
 | `web/test/weather_service_test.dart` | Tes logika cuaca dan fallback. |
 | `web/test/widget_test.dart` | Smoke/widget test bootstrap aplikasi. |
 | `web/pubspec.yaml` | Dependency Dart/Flutter, SDK constraints, asset/font. |
@@ -1178,37 +1189,6 @@ bukan source algoritma model.
 | `web/firestore.rules` | Aturan akses dan validasi dokumen Firestore. |
 | `web/firestore.indexes.json` | Indeks query Firestore. |
 | `web/assets/` | Gambar dekoratif, background, ikon, dan model 3D UI; bukan gambar training model. Daftar asset individual ada di Lampiran A. |
-
-#### Flutter Mobile — aplikasi terpisah
-
-| File/folder | Fungsi |
-|---|---|
-| `mobile/lib/main.dart` | Entry point aplikasi Flutter mobile, Firebase, autentikasi dan navigasi. |
-| `mobile/lib/firebase_options.dart` | Konfigurasi Firebase client untuk target mobile. |
-| `mobile/lib/screens/auth_screen.dart` | Layar autentikasi mobile. |
-| `mobile/lib/screens/dashboard_screen.dart` | Dashboard mobile. |
-| `mobile/lib/screens/scan_screen.dart` | Layar scan mobile dan pemanggilan API. |
-| `mobile/lib/screens/history_screen.dart` | Layar riwayat mobile. |
-| `mobile/lib/models/monitoring_record.dart` | Model record monitoring; factory constructor memetakan JSON/API/Firestore menjadi object. |
-| `mobile/lib/providers/monitoring_provider.dart` | State/provider untuk data monitoring yang dibagikan antar-widget. |
-| `mobile/lib/services/monitoring_repository.dart` | Akses data monitoring mobile. |
-| `mobile/lib/services/plant_api_service.dart` | HTTP client mobile menuju endpoint backend. |
-| `mobile/lib/services/legacy_history_migrator.dart` | Orkestrasi migrasi record lama lintas platform. |
-| `mobile/lib/services/legacy_history_migrator_io.dart` | Implementasi migrasi yang bergantung pada dart:io. |
-| `mobile/lib/services/legacy_history_migrator_stub.dart` | Implementasi stub untuk platform tanpa dukungan I/O tersebut. |
-| `mobile/lib/theme/app_theme.dart` | Tema visual mobile. |
-| `mobile/lib/widgets/garden_artwork.dart` | Ilustrasi dekoratif mobile. |
-| `mobile/lib/widgets/glass_surface.dart` | Surface visual mobile. |
-| `mobile/lib/widgets/plant_backdrop.dart` | Background mobile. |
-| `mobile/lib/widgets/soft_motion.dart` | Gerak/transisi visual mobile. |
-| `mobile/test/auth_screen_test.dart`, `mobile/test/widget_test.dart` | Tes UI mobile. |
-| `mobile/pubspec.yaml`, `mobile/pubspec.lock`, `mobile/analysis_options.yaml` | Dependency, versi terpilih dan lint mobile. |
-| `mobile/README.md` | Petunjuk penggunaan/pengembangan Flutter Mobile. |
-| `mobile/.gitignore` | File/cache Mobile lokal yang tidak perlu dilacak Git. |
-| `mobile/firebase.json`, `mobile/firestore.rules`, `mobile/web/` | Konfigurasi Firebase dan target web milik aplikasi mobile terpisah. |
-| `mobile/android/`, `mobile/ios/`, `mobile/macos/` | Runner dan konfigurasi platform native hasil scaffolding Flutter; dibutuhkan saat build target terkait, bukan lokasi algoritma klasifikasi. |
-| `mobile/android/app/google-services.json` | Konfigurasi Firebase untuk Android client; jangan disamakan dengan Firebase Admin service-account key. |
-| `mobile/assets/` | Aset yang dideklarasikan untuk aplikasi Mobile. |
 
 #### Data, model, dan output
 
@@ -1231,7 +1211,7 @@ adalah hasil runtime/evaluasi. Untuk materi tim, fokuskan pembacaan pada file
 entry point, service, model, dan trainer di atas.
 
 Folder/file seperti `.dart_tool/`, `build/`, `.flutter-plugins-dependencies`,
-`web/.metadata`, `mobile/.metadata`, `.idea/`, `*.iml`, `firestore-debug.log`,
+`web/.metadata`, `.idea/`, `*.iml`, `firestore-debug.log`,
 dan `.DS_Store` adalah cache, log, metadata IDE, atau hasil build lokal; bukan
 algoritma deteksi. Folder native Android/iOS/macOS berisi konfigurasi runner
 yang diperlukan saat membangun target platform, tetapi bukan bagian pipeline
