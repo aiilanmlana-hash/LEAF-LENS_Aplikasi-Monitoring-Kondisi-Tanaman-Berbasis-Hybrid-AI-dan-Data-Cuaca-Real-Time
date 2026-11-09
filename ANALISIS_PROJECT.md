@@ -66,6 +66,7 @@ kebutuhan proyek, bukan tanggal kronologis yang dibuktikan oleh Git.
 | `backend/segmentation.py` | K-Means warna pada ruang Lab, filter HSV, morfologi, penghitungan rasio hijau/kering, serta fitur rata-rata HSV. |
 | `backend/fuzzy_logic.py` | Membership functions, sembilan aturan Sugeno, pengurangan skor risiko blight berbasis cuaca, dan severity. |
 | `backend/numeric_ann.py` | ANN numerik NumPy: normalisasi, forward pass, backpropagation, Adam, prediksi, save/load checkpoint. |
+| `backend/generate_ann_dataset.py` | Membuat CSV 500–1000 baris sintetis dan deterministik untuk smoke test pelatihan ANN; bukan data lapangan. |
 | `backend/train_numeric_ann.py` | Membaca CSV berlabel, membagi data stratified, melatih NumericFeatureANN, dan menyimpan metrik. |
 | `backend/train_plant_model.py` | Filter kelas, transformasi gambar, fine-tuning/evaluasi MobileNetV2, metrik, dan checkpoint berisi bobot + nama kelas. |
 | `backend/prepare_dataset.py` | Dry-run dan pemindahan gambar Background/OOD serta PlantDoc ke split PlantVillage; kelas non-target dapat dihapus saat `--apply`. |
@@ -535,9 +536,25 @@ early-stopping patience 40.
 Untuk runtime, API otomatis mencari `backend/numeric_ann_weights.json`;
 `PLANT_NUMERIC_ANN_WEIGHTS` dapat dipakai untuk memilih file lain. API hanya
 memberi prediksi ANN jika checkpoint input-nya cocok 10 fitur **dan** cuaca
-tersedia. Repository tidak memiliki CSV observasi numerik ground truth yang
-diperlukan; jangan mengklaim ANN tersebut telah dilatih atau memiliki accuracy
-sampai data dan report nyata tersedia.
+tersedia. FastAPI memuat checkpoint saat startup dan mencatat hasil preload di
+log. `backend/generate_ann_dataset.py` menyediakan 750 baris sampel sintetis
+yang dapat dibuat ulang dengan seed; checkpoint sampel yang disimpan di
+repository hanya untuk memverifikasi alur training/loading. Label sintetis
+bukan ground truth dan metrik holdout-nya bukan akurasi lapangan. Untuk
+evaluasi ilmiah atau penggunaan produksi, ganti CSV sampel dengan observasi
+numerik yang dilabeli secara independen.
+
+Jalankan sampel lokal dari root repository:
+
+```sh
+python backend/generate_ann_dataset.py --output backend/dataset_numeric.csv --rows 750 --seed 17
+python backend/train_numeric_ann.py --dataset backend/dataset_numeric.csv \
+  --output backend/numeric_ann_weights.json
+```
+
+Setelah trainer selesai, restart API agar bobot baru dimuat pada startup.
+Trainer tetap mendukung path dataset sebagai argumen posisi untuk kompatibilitas
+dengan perintah lama.
 
 ## 10. Mengapa foto wajah bisa salah diprediksi?
 

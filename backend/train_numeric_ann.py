@@ -14,7 +14,10 @@ from pathlib import Path
 
 import numpy as np
 
-from backend.numeric_ann import NumericFeatureANN
+if __package__:
+    from .numeric_ann import NumericFeatureANN
+else:
+    from numeric_ann import NumericFeatureANN
 
 FEATURE_COLUMNS = (
     "green_ratio",
@@ -123,7 +126,18 @@ def _classification_metrics(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dataset", type=Path, help="Labeled CSV dataset")
+    parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        type=Path,
+        help="Labeled CSV dataset (positional form)",
+    )
+    parser.add_argument(
+        "--dataset",
+        dest="dataset_option",
+        type=Path,
+        help="Labeled CSV dataset",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -137,12 +151,17 @@ def main() -> None:
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=17)
     args = parser.parse_args()
+    if args.dataset_path and args.dataset_option:
+        parser.error("provide the dataset either positionally or with --dataset, not both.")
+    dataset_path = args.dataset_option or args.dataset_path
+    if dataset_path is None:
+        parser.error("a dataset path is required (use --dataset PATH or a positional path).")
     if args.epochs < 1 or args.batch_size < 1 or args.patience < 0:
         raise SystemExit("epochs and batch-size must be positive; patience nonnegative.")
     if not 0 < args.validation_fraction < 1:
         raise SystemExit("validation-fraction must be between 0 and 1.")
 
-    features, labels = load_dataset(args.dataset)
+    features, labels = load_dataset(dataset_path)
     training_indexes, validation_indexes = _stratified_split(
         labels, args.validation_fraction, args.seed
     )
@@ -167,7 +186,7 @@ def main() -> None:
         "model": "NumericFeatureANN",
         "features": list(FEATURE_COLUMNS),
         "labels": list(LABELS),
-        "dataset": str(args.dataset.resolve()),
+        "dataset": str(dataset_path.resolve()),
         "training_samples": int(len(training_indexes)),
         "validation_samples": int(len(validation_indexes)),
         "seed": args.seed,

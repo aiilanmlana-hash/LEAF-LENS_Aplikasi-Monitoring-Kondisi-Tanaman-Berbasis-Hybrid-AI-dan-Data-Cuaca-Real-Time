@@ -121,14 +121,19 @@ class NumericFeatureANN:
                 # Backpropagate cross-entropy gradients from output to hidden layer.
                 output_gradient = (probabilities - batch_targets) / len(indexes)
                 weights_2_gradient = (
-                    hidden.T @ output_gradient + weight_decay * self._weights_2
+                    np.einsum(
+                        "bh,bc->hc", hidden, output_gradient, optimize=False
+                    )
+                    + weight_decay * self._weights_2
                 )
                 bias_2_gradient = np.sum(output_gradient, axis=0, keepdims=True)
                 hidden_gradient = np.einsum(
                     "bc,hc->bh", output_gradient, self._weights_2
                 ) * (1 - hidden**2)
                 weights_1_gradient = (
-                    batch_features.T @ hidden_gradient
+                    np.einsum(
+                        "bi,bh->ih", batch_features, hidden_gradient, optimize=False
+                    )
                     + weight_decay * self._weights_1
                 )
                 bias_1_gradient = np.sum(hidden_gradient, axis=0, keepdims=True)
@@ -304,9 +309,15 @@ class NumericFeatureANN:
         assert self._bias_1 is not None
         assert self._weights_2 is not None
         assert self._bias_2 is not None
-        hidden = np.tanh(values @ self._weights_1 + self._bias_1)
+        hidden = np.tanh(
+            np.einsum("bi,ih->bh", values, self._weights_1, optimize=False)
+            + self._bias_1
+        )
         # Softmax converts the output-layer scores into class probabilities.
-        return hidden, self._softmax(hidden @ self._weights_2 + self._bias_2)
+        logits = np.einsum(
+            "bh,hc->bc", hidden, self._weights_2, optimize=False
+        ) + self._bias_2
+        return hidden, self._softmax(logits)
 
     def _validated_data(
         self, features: np.ndarray, labels: np.ndarray, name: str

@@ -132,6 +132,11 @@ async def lifespan(_: FastAPI):
         _logger.info("Image classification model preloaded.")
     except HTTPException as error:
         _logger.warning("Image classifier preload skipped: %s", error.detail)
+    numeric_model, numeric_error = await run_in_threadpool(_numeric_ann_model)
+    if numeric_model is not None:
+        _logger.info("Numeric ANN checkpoint loaded.")
+    elif numeric_error:
+        _logger.info("Numeric ANN preload skipped: %s", numeric_error)
     yield
 
 

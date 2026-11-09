@@ -269,7 +269,7 @@ PLANT_REQUIRE_AUTH=true uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 Local `localhost` and `127.0.0.1` origins on arbitrary development ports are allowed by the API middleware. Use HTTPS for the deployed API and web origin.
 
-The API also returns a compact `ai_context_json` with short keys for use by a future narration service. No external LLM provider is currently configured, so the app does not send user data to an LLM. A trained numeric ANN checkpoint at `backend/numeric_ann_weights.json` is loaded automatically; `PLANT_NUMERIC_ANN_WEIGHTS=/path/to/numeric_ann_weights.json` overrides the path. The model is deliberately reported unavailable until actual labeled data has been used to train it.
+The API also returns a compact `ai_context_json` with short keys for use by a future narration service. No external LLM provider is currently configured, so the app does not send user data to an LLM. A numeric ANN checkpoint at `backend/numeric_ann_weights.json` is preloaded automatically when the API starts; `PLANT_NUMERIC_ANN_WEIGHTS=/path/to/numeric_ann_weights.json` overrides the path. The repository's sample checkpoint is trained from synthetic rows for local pipeline testing only. Its predictions and validation metrics are not evidence of field accuracy; replace it with independently labeled observations before relying on ANN output.
 
 PlantVillage inference runs locally in the FastAPI process; it does not call a chat LLM or spend LLM tokens. The compact JSON is prepared for optional future narration, but no prompt is sent unless you explicitly add an LLM provider.
 
@@ -333,13 +333,18 @@ Train the ANN from a labeled CSV (columns:
 labels `healthy`, `dry`, or `infected`):
 
 ```sh
-python -m backend.train_numeric_ann observations.csv --output backend/numeric_ann_weights.json
+python backend/generate_ann_dataset.py --output backend/dataset_numeric.csv --rows 750 --seed 17
+python backend/train_numeric_ann.py --dataset backend/dataset_numeric.csv --output backend/numeric_ann_weights.json
 ```
 
-The default checkpoint path is loaded automatically; set
-`PLANT_NUMERIC_ANN_WEIGHTS` only when the checkpoint is stored elsewhere. A
-validation split and representative labels are required before using ANN
-predictions in production.
+The generated `healthy`, `dry`, and `infected` labels are synthetic. The
+trainer prints a held-out synthetic validation summary and writes a metrics
+JSON next to the checkpoint; do not report those values as measured
+plant-health accuracy. After training, restart the FastAPI process. On startup,
+`backend/main.py` automatically loads the default checkpoint (or the path in
+`PLANT_NUMERIC_ANN_WEIGHTS`) and logs whether it was loaded. The metrics file
+is ignored by Git; the sample CSV and checkpoint are retained for repeatable
+local testing.
 
 The result card has **Dengarkan Analisis** using the browser's Indonesian (`id-ID`) speech engine, naturalized rate and pitch. Actual voice selection depends on installed browser/OS Indonesian voices.
 

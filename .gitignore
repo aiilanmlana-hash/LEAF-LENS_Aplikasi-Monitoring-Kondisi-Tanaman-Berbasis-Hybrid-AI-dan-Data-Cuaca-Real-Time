@@ -33,6 +33,7 @@ outputsApp/
 PlantVillage/
 *.pth
 *.h5
+/backend/numeric_ann_weights.metrics.json
 
 # Flutter build artifacts
 .dart_tool/

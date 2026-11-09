@@ -26,6 +26,7 @@ from backend.main import (
     UNSUPPORTED_PLANT_MESSAGE,
     app,
     fuzzy_health_score,
+    lifespan,
 )
 from backend.compact_context import build_compact_ai_context
 from backend.care_recommendations import recommend_care
@@ -33,6 +34,7 @@ from backend.auth import verified_user
 from backend.fuzzy_logic import sugeno_health_score
 from fastapi import HTTPException
 from backend.numeric_ann import NumericFeatureANN
+from backend.generate_ann_dataset import generate_rows
 from backend.prepare_dataset import prepare_dataset
 from backend.segmentation import numeric_image_features
 from backend.train_numeric_ann import FEATURE_COLUMNS, load_dataset
@@ -622,6 +624,39 @@ class SugenoAndContextTests(unittest.TestCase):
 
 
 class NumericAnnTests(unittest.TestCase):
+    def test_numeric_ann_sample_generator_is_bounded_and_reproducible(self):
+        rows = generate_rows(row_count=750, seed=23)
+        self.assertEqual(len(rows), 750)
+        self.assertEqual(rows, generate_rows(row_count=750, seed=23))
+        self.assertEqual(
+            {
+                label: sum(row["label"] == label for row in rows)
+                for label in ("healthy", "dry", "infected")
+            },
+            {"healthy": 250, "dry": 250, "infected": 250},
+        )
+        bounds = {
+            "green_ratio": (0.0, 100.0),
+            "dry_ratio": (0.0, 100.0),
+            "mobilenet_confidence": (0.70, 1.00),
+            "fuzzy_health_score": (0.0, 100.0),
+            "mean_hue": (0.0, 180.0),
+            "mean_saturation": (0.0, 255.0),
+            "mean_value": (0.0, 255.0),
+            "temperature_c": (15.0, 40.0),
+            "humidity_pct": (30.0, 100.0),
+            "precipitation_mm": (0.0, 50.0),
+        }
+        for row in rows:
+            self.assertLessEqual(row["green_ratio"] + row["dry_ratio"], 100)
+            for feature, (minimum, maximum) in bounds.items():
+                self.assertTrue(minimum <= row[feature] <= maximum)
+            self.assertIn(row["label"], ("healthy", "dry", "infected"))
+
+    def test_numeric_ann_sample_generator_rejects_row_count_outside_range(self):
+        with self.assertRaisesRegex(ValueError, "between 500 and 1000"):
+            generate_rows(row_count=499)
+
     def test_api_uses_backend_checkpoint_path_without_environment_override(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "missing-ann.json"
@@ -653,6 +688,29 @@ class NumericAnnTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         assert loaded is not None
         self.assertEqual(loaded.input_size, len(FEATURE_COLUMNS))
+
+    def test_api_lifespan_preloads_numeric_ann_checkpoint(self):
+        async def run_lifespan():
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with (
+                    patch("backend.main.DATA_DIR", root),
+                    patch("backend.main.MASK_DIR", root / "masks"),
+                    patch("backend.main.initialize_database"),
+                    patch(
+                        "backend.main._model_resources",
+                        side_effect=HTTPException(status_code=503, detail="missing"),
+                    ),
+                    patch(
+                        "backend.main._numeric_ann_model",
+                        return_value=(Mock(), None),
+                    ) as preload,
+                ):
+                    async with lifespan(app):
+                        pass
+                preload.assert_called_once_with()
+
+        asyncio.run(run_lifespan())
 
     def test_ann_trains_predicts_and_round_trips_checkpoint(self):
         features = np.asarray(

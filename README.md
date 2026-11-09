@@ -27,6 +27,7 @@ Project_Klasifikasi_Daun/
 │   ├── fuzzy_logic.py       # Sugeno health score and severity
 │   ├── care_recommendations.py # Deterministic triage decision tree
 │   ├── numeric_ann.py      # Optional ANN for numeric measurements
+│   ├── generate_ann_dataset.py # Reproducible synthetic ANN sample data
 │   ├── train_plant_model.py  # Train/evaluate image classifier
 │   └── train_numeric_ann.py # Train optional numeric ANN from labeled CSV
 ├── web/                     # Flutter Web frontend (Dart)
@@ -101,9 +102,10 @@ Project_Klasifikasi_Daun/
   `backend/numeric_ann.py`. It needs a labeled CSV of seven image features,
   temperature, humidity, rainfall, and a `healthy`/`dry`/`infected`
   ground-truth label. Train it with `backend/train_numeric_ann.py`. It is
-  loaded automatically from `backend/numeric_ann_weights.json` when a trained
-  ten-feature checkpoint exists; `PLANT_NUMERIC_ANN_WEIGHTS` can override that
-  path. Weather must also be available for inference.
+  loaded automatically at API startup from `backend/numeric_ann_weights.json`;
+  `PLANT_NUMERIC_ANN_WEIGHTS` can override that path. Weather must also be
+  available for inference. The checked-in sample CSV/checkpoint are synthetic
+  pipeline-test artifacts, not validated field data or a disease diagnostic.
 - **Fuzzy logic** is the deterministic rule system in
   `backend/fuzzy_logic.py`; it does not learn from a dataset. It uses
   membership levels for green and dry area and a weather-risk rule for blight
@@ -117,7 +119,7 @@ Project_Klasifikasi_Daun/
 |---|---|---|
 | Web photo input | JPEG, PNG, or WebP selected/captured in the scan page | Sent to the API as multipart field `image` |
 | Image-model training input | `PlantVillage/train/<class>/` and `PlantVillage/val/<class>/` | Folder names define MobileNetV2's image classes |
-| Numeric-ANN training input | CSV with seven image features, three weather features, plus `label` | Independently labeled numeric health measurements |
+| Numeric-ANN training input | 10 numeric features plus `label` | Use independently labeled observations for evaluation; included sample rows are synthetic |
 | Web history output | Firestore collection `monitoring_records`, field `user_id` | Web history is isolated to the signed-in user |
 | API history output | `outputsApp/monitoring_api.sqlite3` and `outputsApp/monitoring_api.csv` | Local backend history; also exposed through API history endpoints |
 | API segmentation output | `outputsApp/masks/` | PNG masks from successful backend analyses |
@@ -253,15 +255,20 @@ uses a stratified holdout, training-only feature normalization, mini-batches,
 Adam, L2 regularization, and validation early stopping:
 
 ```sh
-python -m backend.train_numeric_ann labeled_features.csv \
+python backend/generate_ann_dataset.py --output backend/dataset_numeric.csv --rows 750 --seed 17
+python backend/train_numeric_ann.py --dataset backend/dataset_numeric.csv \
   --output backend/numeric_ann_weights.json
 ```
 
-PlantVillage disease-folder names alone are not labels for numeric health
-features; do not generate or report ANN metrics without independently labeled
-feature rows. When a trained checkpoint exists at
-`backend/numeric_ann_weights.json`, the API loads it automatically; use
-`PLANT_NUMERIC_ANN_WEIGHTS` only to select a different path. The image segmentation combines HSV thresholds with deterministic,
+The generator is for testing the data/training/loading workflow only: its
+labels are assigned from synthetic feature profiles, not expert-labeled
+observations. Its validation metrics do not measure real plant-health
+performance. Replace the sample with independently labeled feature rows
+before drawing accuracy conclusions or using ANN predictions for decisions.
+PlantVillage disease-folder names alone are not labels for these numeric
+health features. The API preloads `backend/numeric_ann_weights.json` on every
+restart; use `PLANT_NUMERIC_ANN_WEIGHTS` only to select a different path. The
+image segmentation combines HSV thresholds with deterministic,
 sampled CIE-Lab K-Means and bounded-memory cluster assignment. Sugeno scoring
 uses bounded ratios and explicit left/right shoulder membership functions.
 

@@ -197,14 +197,25 @@ observasi yang sama. API otomatis mencari
 memilih checkpoint lain. API tidak mengganti model yang belum dilatih dengan
 bobot acak dan UI menunjukkan bila ANN belum tersedia.
 
-**Status saat laporan ini dibuat:** bobot `backend/numeric_ann_weights.json`
-belum dibuat. CSV monitoring yang tersedia berisi prediksi/kondisi hasil
-aplikasi, bukan label ground-truth independen; data tersebut juga tidak
-memiliki seluruh sepuluh fitur cuaca dan citra yang diperlukan. CSV cuaca BMKG
-hanya berisi observasi cuaca, bukan label kesehatan daun. Membuat target ANN
-dengan menyalin keluaran fuzzy atau prediksi model lain akan menghasilkan
-label sirkular, sehingga tidak dilakukan. ANN baru layak dilatih setelah data
-berlabel yang representatif tersedia.
+**Status catatan penguji lokal:** `backend/dataset_numeric.csv` berisi 750
+observasi sintetis yang dibuat oleh `backend/generate_ann_dataset.py` dengan
+seed tetap; `backend/numeric_ann_weights.json` adalah checkpoint contoh hasil
+pelatihan CSV tersebut. Label berasal dari profil simulasi, bukan anotasi ahli
+atau observasi lapangan. Karena itu, laporan metrik holdout hanya memverifikasi
+jalur training dan tidak boleh dipakai untuk mengklaim akurasi kesehatan
+tanaman. Untuk evaluasi yang sahih, ganti dataset dengan observasi berlabel
+independen dan dokumentasikan metode anotasinya. CSV monitoring dan CSV cuaca
+BMKG saja tidak menyediakan label ground-truth untuk fitur numerik tersebut.
+
+API memuat checkpoint ANN default saat startup/restart dan menulis status
+preload ke log; `PLANT_NUMERIC_ANN_WEIGHTS` dapat menunjuk checkpoint lain.
+Perintah untuk membuat ulang sampel dan melatih checkpoint dari root proyek:
+
+```sh
+python backend/generate_ann_dataset.py --output backend/dataset_numeric.csv --rows 750 --seed 17
+python backend/train_numeric_ann.py --dataset backend/dataset_numeric.csv \
+  --output backend/numeric_ann_weights.json
+```
 
 ### 2.7 Rekomendasi penanganan
 
@@ -374,8 +385,8 @@ probabilitas prediksi benar sebesar nilai confidence.
 - Laporan mesin: `outputsApp/pbl_plantvillage_metrics.json`, berisi konfigurasi,
   kelas, riwayat epoch, loss, accuracy, precision, recall, F1, confusion matrix,
   dan distribusi confidence.
-- Bobot ANN numerik: belum tersedia karena dataset numerik berlabel belum ada;
-  tidak dibuat menggunakan label sintetis.
+- Bobot ANN numerik: checkpoint contoh tersedia, dilatih menggunakan sampel
+  sintetis; metriknya bukan evaluasi performa lapangan.
 
 ## 5. Arsitektur Kode dan Struktur Direktori
 
@@ -388,6 +399,7 @@ probabilitas prediksi benar sebesar nilai confidence.
 | `backend/fuzzy_logic.py` | Membership, aturan Sugeno, skor kesehatan dan severity |
 | `backend/weather.py` | Open-Meteo dan fallback rata-rata bulanan BMKG |
 | `backend/numeric_ann.py` | Implementasi ANN NumPy, normalisasi, training/inference API, serialisasi checkpoint |
+| `backend/generate_ann_dataset.py` | Membuat 500–1000 baris sampel numerik sintetis untuk pengujian pipeline ANN |
 | `backend/train_numeric_ann.py` | Pelatihan ANN dari CSV berlabel dan laporan validasi |
 | `backend/care_recommendations.py` | Decision tree triase, tindakan darurat, rekomendasi dan dampak |
 | `backend/auth.py`, `backend/compact_context.py` | Verifikasi Firebase dan payload hasil ringkas deterministik |
